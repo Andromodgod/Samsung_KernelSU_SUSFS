@@ -73,9 +73,9 @@ This repository includes custom GitHub Actions automation (`.github/actions/buil
 
 You can fork this repository and adapt the CI pipeline to compile custom kernels for other Galaxy models, One UI versions, and Linux kernel branches.
 
-### 1. One UI & Kernel Version Compatibility Matrix
+### Step 1: Identify Your Device, One UI Version & Kernel Matrix
 
-Identify your device's exact **GKI / Linux kernel version** and **build system** before creating your branch (check **Settings → About phone → Software information → Kernel version** on your target firmware):
+Check **Settings → About phone → Software information → Kernel version** on your target firmware to identify your exact Linux GKI version and SoC platform:
 
 | One UI Version | Example Galaxy Devices | SoC Platform | Kernel Version | SuSFS Branch | Build Type (`build_type`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -89,11 +89,157 @@ Identify your device's exact **GKI / Linux kernel version** and **build system**
 
 ---
 
-### 2. Step-by-Step Fork & Setup Guide
+### Step 2: Fork the Repository & Create Your Device Branch
 
-#### Step A: Fork & Prepare Your Device Branch
 1. **Fork** this repository to your GitHub account.
 2. Download the matching open-source kernel package for your exact model and firmware CSC/build from **[Samsung Open Source](https://opensource.samsung.com/)**.
-3. Create a dedicated branch following the repository's naming convention:
-   ```text
-   <MODEL>-<OneUI>-<KERNEL_VERSION>
+3. Clone your fork locally and create a branch following the repository's naming convention (`<MODEL>-<OneUI>-<KERNEL_VERSION>`):
+   ```bash
+   git clone [https://github.com/](https://github.com/)<your-username>/Samsung_KernelSU_SUSFS.git
+   cd Samsung_KernelSU_SUSFS
+
+   # Example for Galaxy S24 Ultra on One UI 7 (Linux 6.1):
+   git checkout -b SM-S928B-Oneui7-android14_6.1
+
+   # Example for Galaxy S23 Ultra on One UI 6.1 (Linux 5.15):
+   git checkout -b SM-S918B-Oneui6-android13_5.15
+   ```
+4. Extract Samsung's kernel source archive into a folder named **identically to your branch** inside the repository root (so `$CONFIG` resolves to `$BRANCH`):
+   ```bash
+   mkdir -p SM-S928B-Oneui7-android14_6.1
+   tar -xzf Kernel.tar.gz -C SM-S928B-Oneui7-android14_6.1/
+   git add .
+   git commit -m "Add SM-S928B One UI 7 kernel source"
+   git push -u origin SM-S928B-Oneui7-android14_6.1
+   ```
+
+---
+
+### Step 3: Configure `.github/workflows/main.yml` for Your Variant
+
+1. **Add Your Branch to the Workflow Dropdown:**
+   In `.github/workflows/main.yml`, add your new branch name under `on.workflow_dispatch.inputs`:
+   ```yaml
+   branch:
+     description: 'Target branch / kernel source folder'
+     required: true
+     default: 'SM-S928B-Oneui7-android14_6.1'
+     type: choice
+     options:
+       - SM-S928B-Oneui8-android14_6.1
+       - SM-S928B-Oneui7-android14_6.1
+       - SM-S918B-Oneui6-android13_5.15
+   ```
+2. **Match the SuSFS Branch to Your Kernel Version:**
+   In `.github/workflows/main.yml`, update the `susfs4ksu` git clone branch to match your target Linux kernel version:
+   - `6.6` kernels (One UI 7 / 8 on S25, A56) → `gki-android15-6.6`
+   - `6.1` kernels (One UI 6.1 / 7 / 8 on S24, Z Fold6, A55) → `gki-android14-6.1`
+   - `5.15` kernels (One UI 6.0 / 6.1 / 7 on S23, Z Fold5) → `gki-android13-5.15`
+   - `5.10` kernels (One UI 6.0 / 6.1 / 7 on S22, A54) → `gki-android12-5.10`
+3. **Set Kernel Version & Build Type Variables:**
+   Ensure `KERNEL_VER` (`6.6`, `6.1`, `5.15`, `5.10`, or `5.4`) and `build_type` (`Bazel` for GKI 2.0 or `make` for legacy non-GKI kernels) match your device row from Step 1.
+
+---
+
+### Step 4: Configure Kernel-Specific Rules in `.github/actions/build/action.yml`
+
+Depending on your One UI version and chipset, verify these four areas in `.github/actions/build/action.yml`:
+
+1. **Chipset / Bazel Target Routing:**
+   - **Qualcomm GKI (`6.1` / `6.6`):** Handled automatically by `elif [[ $KERNEL_VER == 6.* ]]`, which runs `./build_kernel_GKI.sh` with `LTO=$EFFECTIVE_LTO`.
+   - **Qualcomm GKI `5.15` (One UI 6 / 7 on S23 Series `SM-S911*` / `SM-S916*` / `SM-S918*`):** Add a branch condition in `start bazel build` so it invokes `build_kernel_GKI.sh`:
+     ```bash
+     elif [[ $BRANCH == SM-S911* || $BRANCH == SM-S916* || $BRANCH == SM-S918* ]]; then
+       chmod +x build_kernel_GKI.sh
+       env $SCRIPT_LTO ./build_kernel_GKI.sh || true
+     ```
+   - **Exynos Bazel Targets:** Match or add your SoC's Bazel target in `start bazel build`:
+     - Exynos 2400 (`SM-S921B`, `SM-S926B`) → `//projects/s5e9945:s5e9945_user`
+     - Exynos 1480 (`SM-A556*`) → `//projects/s5e8845:s5e8845_user`
+     - Exynos 1580 (`SM-A566*`) → `//exynos/device/mx/mx8855:mx8855`
+   - **Legacy Non-GKI (`4.19` / `5.4`):** Set `build_type: make` in `.github/workflows/main.yml` so CI executes the `start make build` step (`./build_kernel.sh`).
+
+2. **Version-Specific Kconfig & KMI Compatibility (`5.10` / `5.15` vs `6.1` / `6.6`):**
+   - **16ms PELT Half-Life (`kernel/sched/pelt.h` & `pelt.c`):** Works identically across `5.10`, `5.15`, `6.1`, and `6.6`.
+   - **MGLRU (`CONFIG_LRU_GEN_ENABLED=y`):** Native in `6.1` and `6.6`. On `5.15` and `5.10`, MGLRU only activates if Samsung backported it into your kernel tree; otherwise Kconfig safely ignores it.
+   - **KMI Symbol Whitelist (`abi_gki_aarch64`):** On GKI 2.0 devices (`5.10`–`6.6`), stock vendor `.ko` modules on `vendor_dlkm` are compiled against Google's KMI. Keep `BUILD_LTO=full` (or `thin` to match stock) and avoid modifying exported kernel structs so Wi-Fi, camera, and audio vendor modules load cleanly.
+   - **`check_merged_defconfig` Strictness:** Bazel's `KernelConfig` step fails if an unknown or parent-disabled Kconfig symbol is injected into `gki_defconfig`. If an older `5.10` or `5.15` tree lacks a newer driver symbol (such as `CONFIG_HID_PLAYSTATION` or `CONFIG_F2FS_FS_ZSTD`), remove that symbol from `base_config_lines` in `.github/actions/build/action.yml`.
+
+3. **Customize Your Kernel Branding (Optional):**
+   To replace `-Normie-Kernel` with your own name in **Settings → About phone → Software information**, update all four occurrences in `.github/actions/build/action.yml`:
+   - `CONFIG_LOCALVERSION="-Your-Kernel"`
+   - Top-level `Makefile` (`filechk_kernel.release` suffix)
+   - `scripts/setlocalversion` suffix
+   - Kleaf `build/kernel/kleaf/impl/stamp.bzl` (`scmversion` suffix)
+
+---
+
+### Step 5: Trigger GitHub Actions & Package
+
+1. Open the **Actions** tab in your forked GitHub repository and select the build workflow.
+2. Click **Run workflow**.
+3. Choose your target branch (`SM-XXXX-OneuiX-...`), select `BUILD_LTO` (`full`, `thin`, or `none`), and click **Run workflow**.
+4. Once all steps finish, download the generated `*-AnyKernel3.zip` from **GitHub Releases** or the workflow run's **Artifacts** section.
+
+---
+
+## 🎛️ Workflow Dispatch Inputs Reference
+
+| Input / Env Variable | Options / Example | Description |
+| :--- | :--- | :--- |
+| `branch` | `SM-S928B-Oneui8-android14_6.1` | Target device/One UI branch folder to build. |
+| `BUILD_LTO` | `full` *(default)*, `thin`, `none` | Controls Clang Link-Time Optimization (`--lto=full` / `LTO=full`). |
+| `build_type` | `Bazel`, `make` | Selects Kleaf/Bazel GKI 2.0 build vs legacy `make` build. |
+| `ccache` | `true`, `false` | Enables compiler caching where supported. |
+
+---
+
+## 🧩 Troubleshooting & Build Notes
+
+- **Kleaf `module_outs` Packaging Error (`tcp_bic.ko`, `tcp_westwood.ko`, `tcp_htcp.ko`):** Enabling `CONFIG_TCP_CONG_ADVANCED=y` exposes legacy TCP congestion modules whose Kconfig defaults are `=m`. Because Kleaf enforces a strict `module_outs` allowlist in `BUILD.bazel`, `.github/actions/build/action.yml` explicitly disables `# CONFIG_TCP_CONG_BIC/WESTWOOD/HTCP is not set` while keeping `CONFIG_TCP_CONG_BBR=y` built-in.
+- **Custom Kernel Name Not Showing in About Phone:**
+  1. Android 14/15 Kleaf builds set `--kleaf_localversion=true` by default, ignoring `CONFIG_LOCALVERSION` and `scripts/setlocalversion`. `action.yml` patches both `Makefile` (`filechk_kernel.release`) and `build/kernel/kleaf/impl/stamp.bzl` so `-Normie-Kernel` is embedded directly into `UTS_RELEASE`.
+  2. If you use **SuSFS (`CONFIG_KSU_SUSFS_SPOOF_UNAME=y`)**, ensure your SuSFS userspace module configuration does not spoof `uname` back to the stock version string if you want `-Normie-Kernel` visible in **Settings → About phone**.
+- **Stock Build Timestamp (`KBUILD_BUILD_TIMESTAMP`):** Samsung's `build_kernel_GKI.sh` hardcodes `KBUILD_BUILD_TIMESTAMP` to match the stock firmware build date. Seeing the stock date next to `-Normie-Kernel` is expected and does not indicate an old image.
+
+---
+
+## 📋 Installation & Post-Flash Verification
+
+### Flashing
+1. Download the latest `*-AnyKernel3.zip` from **GitHub Releases** (or GitHub Actions workflow artifacts).
+2. Flash the zip using a compatible kernel flasher such as **[KernelFlasher](https://github.com/fatalcoder524/KernelFlasher)** or **[Horizon Kernel Flasher](https://github.com/libxzr/HorizonKernelFlasher)**.
+3. Reboot and verify the active kernel version under **Settings → About phone → Software information → Kernel version** (`...-Normie-Kernel`).
+
+### Quick `adb shell` Verification
+```bash
+# Confirm Normie-Kernel branding
+uname -r
+
+# Confirm BBR congestion control & FQ default qdisc
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+
+# Confirm MGLRU is active at boot (0x0007)
+cat /sys/kernel/mm/lru_gen/enabled
+
+# Confirm /proc/config.gz stealth masking and 300Hz timer
+zcat /proc/config.gz | grep -E "CONFIG_HZ=|CONFIG_KSU|CONFIG_KPM|CONFIG_BBG"
+```
+
+---
+
+## 🌟 Credits & Upstream Projects
+
+Built on top of open-source contributions from the Android kernel community:
+
+| Project / Contributor | Role | Link |
+| :--- | :--- | :--- |
+| **Wild Kernels (`Jimsterino98`)** | Upstream Samsung GKI CI & patch framework | [![GitHub](https://img.shields.io/badge/GitHub-WildKernels-blue?style=flat-square&logo=github)](https://github.com/WildKernels/Samsung_KernelSU_SUSFS) |
+| **BakaSU (`Baka-SU`)** | Kernel-mode root solution | [![GitHub](https://img.shields.io/badge/GitHub-Baka--SU-blue?style=flat-square&logo=github)](https://github.com/Baka-SU/BakaSU) |
+| **SUSFS (`simonpunk`)** | Kernel-level root hiding subsystem | [![GitLab](https://img.shields.io/badge/GitLab-simonpunk-orange?style=flat-square&logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu) |
+| **SUSFS Module (`sidex15`)** | Userspace companion module | [![GitHub](https://img.shields.io/badge/GitHub-sidex15-blue?style=flat-square&logo=github)](https://github.com/sidex15) |
+| **NoMount (`maxsteeel`)** | Mountless namespace isolation | [![GitHub](https://img.shields.io/badge/GitHub-maxsteeel-blue?style=flat-square&logo=github)](https://github.com/maxsteeel/nomount) |
+| **Baseband-Guard (`vc-teahouse`)** | Baseband & partition protection | [![GitHub](https://img.shields.io/badge/GitHub-vc--teahouse-blue?style=flat-square&logo=github)](https://github.com/vc-teahouse/Baseband-guard) |
+| **DroidSpaces (`ravindu644`)** | Linux container support for Android | [![GitHub](https://img.shields.io/badge/GitHub-ravindu644-blue?style=flat-square&logo=github)](https://github.com/ravindu644/Droidspaces-OSS) |
+| **KernelSU (`tiann`)** | Core KernelSU architecture | [![GitHub](https://img.shields.io/badge/GitHub-tiann-blue?style=flat-square&logo=github)](https://github.com/tiann/KernelSU) |
+| **Community Contributors** | `backslashxx`, `Teemo` (`liqideqq`), `kerneltoast` | Patch & GKI contributions |

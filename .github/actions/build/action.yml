@@ -181,7 +181,6 @@ runs:
          # Battery & Deep Sleep Optimizations (KMI-safe)
          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
          "CONFIG_SUSPEND_SKIP_SYNC=y",
-         "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set",
          # MGLRU active at boot
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",

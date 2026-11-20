@@ -32,7 +32,7 @@ runs:
        fi
       done
 
-      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC, resolves KSU_VERSION, and skips the .git submodule error
+      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC, KSU_VERSION, and uapi headers
       KSU_REPO=""
       for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
        if [ -d "$repo/.git" ]; then
@@ -42,6 +42,9 @@ runs:
       done
       if [ -n "$KSU_REPO" ]; then
        KSU_VER=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "12000")
+       if [ -d "$KSU_REPO/uapi" ] && [ ! -d "$KERNEL_DIR/drivers/kernelsu/uapi" ]; then
+        cp -r "$KSU_REPO/uapi" "$KERNEL_DIR/drivers/kernelsu/uapi"
+       fi
       else
        KSU_VER="12000"
       fi
@@ -52,6 +55,22 @@ runs:
 
      kernel_dir = pathlib.Path(sys.argv[1])
      ksu_ver = sys.argv[2]
+     ksu_dir = kernel_dir / "drivers/kernelsu"
+
+     inc_dirs = [
+         "$(srctree)/drivers/kernelsu",
+         "$(srctree)/drivers/kernelsu/include",
+     ]
+     if ksu_dir.is_dir():
+         for hdr in ksu_dir.rglob("supercall.h"):
+             parent = hdr.parent.parent if hdr.parent.name == "uapi" else hdr.parent
+             rel = parent.relative_to(kernel_dir).as_posix()
+             flag = f"$(srctree)/{rel}"
+             if flag not in inc_dirs:
+                 inc_dirs.append(flag)
+             print(f"Found supercall.h at {hdr.relative_to(kernel_dir)} -> -I{flag}")
+
+     inc_flags = " ".join(f"-I{d}" for d in inc_dirs)
 
      targets = [
          kernel_dir / "drivers/kernelsu/Kbuild",
@@ -84,8 +103,9 @@ runs:
          )
          if "KSU_VERSION :=" not in text:
              text = f"KSU_VERSION := {ksu_ver}\n" + text
+         text += f"\nccflags-y += {inc_flags}\nsubdir-ccflags-y += {inc_flags}\n"
          kbuild.write_text(text, encoding="utf-8")
-         print(f"Patched {kbuild}")
+         print(f"Patched {kbuild} with {inc_flags}")
      PYEOF
 
       # 3. Enforce Normie-Kernel localversion

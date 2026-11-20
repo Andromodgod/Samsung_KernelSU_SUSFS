@@ -20,6 +20,42 @@ runs:
      cd "$CONFIG"
      echo "Building the kernel..."
 
+     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, and Normie-Kernel branding)
+     KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
+     if [ -d "$KERNEL_DIR" ]; then
+      # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
+      for link in drivers/kernelsu fs/nomount security/baseband-guard; do
+       if [ -L "$KERNEL_DIR/$link" ]; then
+        TARGET=$(readlink -f "$KERNEL_DIR/$link")
+        rm -f "$KERNEL_DIR/$link"
+        cp -r "$TARGET" "$KERNEL_DIR/$link"
+       fi
+      done
+
+      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC and skips the .git submodule check
+      for kbuild in \
+       "$KERNEL_DIR/drivers/kernelsu/Kbuild" \
+       "$KERNEL_DIR/KernelSU/kernel/Kbuild" \
+       "$KERNEL_DIR/BakaSU/kernel/Kbuild"; do
+       if [ -f "$kbuild" ]; then
+        sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$kbuild"
+        grep -q "KSU_SRC :=" "$kbuild" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$kbuild"
+        sed -i '/You should use BakaSU as a git submodule/d' "$kbuild"
+       fi
+      done
+
+      # 3. Enforce Normie-Kernel localversion
+      DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"
+      if [ -f "$DEFCONFIG" ]; then
+       sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
+       echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
+      fi
+      if [ -f "$KERNEL_DIR/scripts/setlocalversion" ]; then
+       sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_DIR/scripts/setlocalversion"
+      fi
+      rm -f "$KERNEL_DIR"/localversion*
+     fi
+
      # 1. Initialize variables as empty (clears them out for "default")
      BAZEL_LTO=""
      SCRIPT_LTO=""

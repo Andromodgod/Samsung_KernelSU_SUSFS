@@ -1,18 +1,29 @@
-name: set kernel name
-description: add wild and remove dirty from kernel name
+name: 'Set Kernel Name'
+description: 'Sets CONFIG_LOCALVERSION to -Normie-Kernel and cleans localversion scripts'
 
 runs:
- using: composite
- steps:
-  - name: add wild to kernel name
-    shell: bash
-    run: |
-     cd "$COMMON"
+  using: 'composite'
+  steps:
+    - name: Configure Normie-Kernel version string
+      shell: bash
+      run: |
+        set -e
+        KERNEL_DIR="${KERNEL_ROOT:-$COMMON}"
+        DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"
 
-     sed -i '$s|echo "\$res"|echo "\$res-Wild"|' ./scripts/setlocalversion
+        if [ -f "$DEFCONFIG" ]; then
+          sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
+          sed -i '/^CONFIG_LOCALVERSION_AUTO=/d' "$DEFCONFIG"
+          echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
+          echo 'CONFIG_LOCALVERSION_AUTO=n' >> "$DEFCONFIG"
+        fi
 
-  - name: remove dirty flag
-    shell: bash
-    run: |
-     cd "$COMMON"
-     sed -i 's/-dirty//' ./scripts/setlocalversion
+        if [ -f "$KERNEL_DIR/scripts/setlocalversion" ]; then
+          sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_DIR/scripts/setlocalversion"
+        fi
+
+        rm -f "$KERNEL_DIR"/localversion*
+
+        if [ -n "$ANYKERNEL3" ] && [ -f "$ANYKERNEL3/anykernel.sh" ]; then
+          sed -i 's/Haroon-Kernel/Normie-Kernel/g; s/Wild-Kernel/Normie-Kernel/g' "$ANYKERNEL3/anykernel.sh"
+        fi

@@ -183,6 +183,43 @@ Depending on your One UI version and chipset, verify these four areas in `.githu
 
 ---
 
+## 🤖 Automating Porting & Build Debugging with AI
+
+Because Samsung GKI 2.0 builds rely on strict Bazel/Kleaf sandboxing, `check_merged_defconfig` diffs, and `module_outs` allowlists, you can use AI coding assistants (**Gemini**, **Claude Code**, **GitHub Copilot**, or **Cursor**) to automate device porting, generate CI patches, and self-heal build failures.
+
+### 1. AI-Assisted Device & One UI Porting
+Instead of manually editing `.github/workflows/main.yml` and `.github/actions/build/action.yml` for a new Galaxy model, attach both workflow files along with your target device's `build_kernel_GKI.sh` (or `build_kernel.sh`) and `arch/arm64/configs/gki_defconfig`, then run this prompt:
+
+```text
+I am porting Normie-Kernel to <MODEL> (e.g., SM-S918B) running One UI <VERSION> on Linux <KERNEL_VER> (e.g., android13-5.15).
+1. Inspect the attached build_kernel_GKI.sh, .github/workflows/main.yml, and .github/actions/build/action.yml.
+2. Update main.yml to add branch "<MODEL>-Oneui<VERSION>-<KERNEL_VER>", set the matching susfs4ksu branch, and configure KERNEL_VER and build_type.
+3. Update action.yml to route this branch to the correct Bazel/make target, strip any base_config_lines symbols missing from this kernel's Kconfig, and preserve -Normie-Kernel UTS_RELEASE branding and /proc/config.gz stealth masking.
+4. Output the complete updated YAML files.
+```
+
+### 2. Automated CI Error Triage & Self-Healing
+When a GitHub Actions build fails, copy the `ERROR:` block from the **Actions** log (roughly 40–60 lines around the failure) and paste it into your AI assistant with `.github/actions/build/action.yml`:
+
+- **`check_merged_defconfig` Mismatch:** Paste the diff block (e.g., `-CONFIG_X y` or `DEFAULT_NET_SCH ... -> ...`). Ask the AI to check whether the symbol is missing in that Linux version, overridden by a vendor fragment (`*.config`), or requires a parent Kconfig toggle, and update `base_config_lines` / `extra_strip_keys`.
+- **Kleaf `module_outs` Allowlist Failure:** When enabling a feature causes Kbuild to compile an unlisted `.ko` module (e.g., `tcp_westwood.ko`), paste the module list and ask the AI to either disable those modules (`# CONFIG_... is not set`) or promote them to built-in (`=y`) and strip them from `modules.bzl`.
+- **Bazel Sandbox Symlink or Header Errors:** Paste missing header or broken symlink errors from `drivers/kernelsu`, `fs/nomount`, or `security/baseband-guard` so the AI can update the materialization/include-path patching step in `action.yml`.
+
+### 3. Autonomous Terminal Agent Workflow (CLI)
+If you use a local terminal coding agent (such as **Claude Code** or **Gemini CLI**) inside your cloned fork, you can automate Kconfig validation and patch generation directly against the extracted Samsung source tree:
+
+```bash
+# Example: Have a CLI agent audit base_config_lines against your newly extracted One UI 7 source tree
+gemini "Inspect SM-S928B-Oneui7-android14_6.1/kernel_platform/common/arch/arm64/configs/ and verify every symbol in .github/actions/build/action.yml base_config_lines exists and passes check_merged_defconfig. Patch action.yml if any symbol conflicts."
+```
+
+### 4. Guardrails When Using AI on GKI Kernels
+- **Preserve KMI Compatibility:** Instruct the AI never to alter exported kernel structs (`struct task_struct`, `struct mm_struct`, etc.) or `abi_gki_aarch64` symbol signatures, or stock `vendor_dlkm` modules will fail to load at boot.
+- **Avoid GitHub Actions Expression Collisions:** When asking an AI to patch Bazel `.bzl` files via inline Python inside `action.yml`, ensure it splits `$` and `{{` (e.g., `'$' + '{{...}}'`) so GitHub Actions does not reject the workflow YAML during template parsing.
+- **Always Verify Output Artifacts:** Confirm the AI keeps the `strings sec/dist/Image | grep "Linux version "` verification check at the end of `action.yml` so you can confirm branding and LTO flags before flashing.
+
+---
+
 ## 🎛️ Workflow Dispatch Inputs Reference
 
 | Input / Env Variable | Options / Example | Description |

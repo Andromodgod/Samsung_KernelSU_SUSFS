@@ -169,8 +169,8 @@ runs:
 
      lto_mode = sys.argv[3]
 
-     # Kconfig entries to append to base gki_defconfig (and strip conflicting overrides from vendor/oem fragments)
-     config_lines = [
+     # Only user-selectable Kconfig symbols with satisfied parent menus (avoids check_merged_defconfig drops)
+     base_config_lines = [
          # Branding
          'CONFIG_LOCALVERSION="-Normie-Kernel"',
          # 300Hz display-aligned kernel timer
@@ -183,19 +183,15 @@ runs:
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",
          "# CONFIG_LRU_GEN_STATS is not set",
-         # ZRAM multi-compression & Zstd
-         "CONFIG_ZRAM_MULTI_COMP=y",
+         # Zstd crypto & F2FS Zstd/LZ4 compression
          "CONFIG_CRYPTO_ZSTD=y",
-         "CONFIG_ZSTD_COMPRESS=y",
-         "CONFIG_ZSTD_DECOMPRESS=y",
-         # F2FS Zstd / LZ4 compression
          "CONFIG_F2FS_FS_COMPRESSION=y",
          "CONFIG_F2FS_FS_ZSTD=y",
          "CONFIG_F2FS_FS_LZ4=y",
          "CONFIG_F2FS_FS_LZ4HC=y",
-         # Built-in controller drivers (Winlator / Moonlight / Emulators)
+         # Built-in controller drivers (with parent CONFIG_INPUT_JOYSTICK=y)
          "CONFIG_INPUT_JOYDEV=y",
-         "CONFIG_INPUT_FF_MEMLESS=y",
+         "CONFIG_INPUT_JOYSTICK=y",
          "CONFIG_JOYSTICK_XPAD=y",
          "CONFIG_JOYSTICK_XPAD_FF=y",
          "CONFIG_JOYSTICK_XPAD_LEDS=y",
@@ -207,14 +203,15 @@ runs:
          "CONFIG_SONY_FF=y",
          "CONFIG_HID_MICROSOFT=y",
          "CONFIG_HID_STEAM=y",
-         # USB Gadget HID & Mass Storage
+         # USB Gadget HID & Mass Storage (auto-selects USB_F_MASS_STORAGE)
          "CONFIG_USB_CONFIGFS_F_HID=y",
          "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-         "CONFIG_USB_F_MASS_STORAGE=y",
-         # Default BBRv3 + CAKE & built-in WireGuard
+         # Default BBRv3 + CAKE (with parent CONFIG_TCP_CONG_ADVANCED=y & CONFIG_NET_SCHED=y) + WireGuard
+         "CONFIG_TCP_CONG_ADVANCED=y",
          "CONFIG_TCP_CONG_BBR=y",
          "CONFIG_DEFAULT_BBR=y",
          'CONFIG_DEFAULT_TCP_CONG="bbr"',
+         "CONFIG_NET_SCHED=y",
          "CONFIG_NET_SCH_CAKE=y",
          "CONFIG_NET_SCH_FQ=y",
          "CONFIG_NET_SCH_DEFAULT=y",
@@ -224,36 +221,33 @@ runs:
      ]
 
      if lto_mode == "full":
-         config_lines += [
+         base_config_lines += [
              "CONFIG_LTO_CLANG=y",
              "# CONFIG_LTO_NONE is not set",
              "# CONFIG_LTO_CLANG_THIN is not set",
              "CONFIG_LTO_CLANG_FULL=y",
          ]
      elif lto_mode == "thin":
-         config_lines += [
+         base_config_lines += [
              "CONFIG_LTO_CLANG=y",
              "# CONFIG_LTO_NONE is not set",
              "# CONFIG_LTO_CLANG_FULL is not set",
              "CONFIG_LTO_CLANG_THIN=y",
          ]
 
-     managed_keys = set()
-     for line in config_lines:
-         m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", line)
-         if m:
-             managed_keys.add(m.group(1))
+     extra_strip_keys = {
+         "CONFIG_DEFAULT_CUBIC",
+         "CONFIG_DEFAULT_RENO",
+         "CONFIG_DEFAULT_PFIFO_FAST",
+         "CONFIG_DEFAULT_FQ_CODEL",
+         "CONFIG_DEFAULT_FQ",
+         "CONFIG_ZRAM_MULTI_COMP",
+         "CONFIG_ZSTD_COMPRESS",
+         "CONFIG_ZSTD_DECOMPRESS",
+         "CONFIG_INPUT_FF_MEMLESS",
+         "CONFIG_USB_F_MASS_STORAGE",
+     }
 
-     def strip_managed(text: str) -> str:
-         out = []
-         for ln in text.splitlines():
-             m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", ln.strip())
-             if m and m.group(1) in managed_keys:
-                 continue
-             out.append(ln)
-         return "\n".join(out) + "\n"
-
-     # Built-in drivers that must not be expected as external .ko in modules.bzl
      builtin_kos = (
          "joydev.ko",
          "xpad.ko",
@@ -291,6 +285,27 @@ runs:
 
      for root in roots:
          print(f"Configuring kernel tree: {root}")
+         config_lines = list(base_config_lines)
+
+         # Only enable ZRAM_MULTI_COMP if backported into this tree's zram Kconfig
+         zram_kc = root / "drivers/block/zram/Kconfig"
+         if zram_kc.is_file() and re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", zram_kc.read_text(encoding="utf-8", errors="ignore"), flags=re.MULTILINE):
+             config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
+
+         managed_keys = set(extra_strip_keys)
+         for line in config_lines:
+             m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", line)
+             if m:
+                 managed_keys.add(m.group(1))
+
+         def strip_managed(text: str) -> str:
+             out = []
+             for ln in text.splitlines():
+                 m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", ln.strip())
+                 if m and m.group(1) in managed_keys:
+                     continue
+                 out.append(ln)
+             return "\n".join(out) + "\n"
 
          # A. Patch gki_defconfig & strip conflicting LOCALVERSION/overrides in fragments
          gki_cfg = root / "arch/arm64/configs/gki_defconfig"
@@ -302,12 +317,12 @@ runs:
          if cfg_dir.is_dir():
              for frag in cfg_dir.rglob("*.config"):
                  ftxt = frag.read_text(encoding="utf-8", errors="ignore")
-                 if "CONFIG_LOCALVERSION" in ftxt:
+                 if any(k in ftxt for k in managed_keys):
                      frag.write_text(strip_managed(ftxt), encoding="utf-8")
              for sec_cfg in cfg_dir.rglob("*_defconfig"):
                  if sec_cfg != gki_cfg:
                      stxt = sec_cfg.read_text(encoding="utf-8", errors="ignore")
-                     if "CONFIG_LOCALVERSION" in stxt:
+                     if any(k in stxt for k in managed_keys):
                          sec_cfg.write_text(strip_managed(stxt), encoding="utf-8")
 
          # B. Remove promoted built-in modules from modules.bzl so Kleaf doesn't fail on missing .ko
@@ -487,28 +502,3 @@ runs:
       echo "Building Kernel"
       make O="$OUT_DIR" ARCH=arm64 -j"$JOBS" Image
      fi
-     
-     #if [[ $BRANCH == SM-S928B* || "$BRANCH" == "SM-S938B-Oneui7" || "$BRANCH" == "SM-S931B-Oneui8" || "$BRANCH" == "SM-F741B-Oneui8" || "$BRANCH" == "SM-X710-Oneui6.1.1" ]]; then
-       #cd kernel_platform
-       #tools/bazel build //common:kernel_aarch64
-       #chmod +x build_kernel_GKI.sh
-       #./build_kernel_GKI.sh || true
-     #elif [[ "$BRANCH" == "SM-X916B" || "$BRANCH" == "SM-F946N-Oneui7" || "$BRANCH" == "SM-S916B-Oneui8" || "$BRANCH" == "SM-S918B-Oneui8" || "$BRANCH" == "SM-F946B-Oneui8" || "$BRANCH" == "SM-S901E-Oneui8" || "$BRANCH" == "SM-X800-Oneui8" || $BRANCH == SM-S911B* || "$BRANCH" == "SM-M556B-Oneui8" ]]; then
-       #cd kernel_platform
-       #tools/bazel build //common:kernel_aarch64
-       #chmod +x build_kernel_GKI.sh
-       #./build_kernel_GKI.sh || true
-     #elif [[ $BRANCH == SM-A546* || "$BRANCH" == "SM-M146B-Oneui7-ADYJ2" || "$BRANCH" == "SM-S908B-Oneui8-bitK" || $BRANCH == SM-A055* || "$BRANCH" == "SM-X610-Oneui6.1.1-bit7" || "$BRANCH" == "SM-A166B-Oneui7" ]]; then
-       #sudo apt update
-       #sudo apt-get install -y libyaml-dev
-       #chmod +x build_kernel.sh
-       #./build_kernel.sh || true
-     #elif [[ "$BRANCH" == "SM-A566B" ]]; then
-       #chmod +x build_script.sh
-       #touch ./kernel-6.6/abi_symbollist.raw
-       #touch ./kernel-6.6/abi_symbollist
-       #./build_script.sh || true
-     #elif [[ "$BRANCH" == "SM-A075M-Oneui7" ]]; then
-       #chmod +x build_kernel.sh
-       #./build_kernel.sh
-     #fi

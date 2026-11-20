@@ -203,6 +203,28 @@ runs:
       cd kernel_platform
       tools/bazel build $BAZEL_LTO //common:kernel_aarch64
      fi
+
+     # 5. Copy built kernel Image out of Bazel cache into dist directories for downstream packaging
+     if [ -d kernel_platform ]; then
+      mkdir -p sec/dist kernel_platform/dist
+      mapfile -t BAZEL_IMAGES < <(
+       find -L kernel_platform/bazel-bin -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
+      )
+      if [ "${#BAZEL_IMAGES[@]}" -eq 0 ]; then
+       mapfile -t BAZEL_IMAGES < <(
+        find kernel_platform/out -path "*/bazel-out/*/bin/*" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
+       )
+      fi
+      for img in "${BAZEL_IMAGES[@]}"; do
+       echo "Copying Bazel artifact: $img"
+       cp -fL "$img" sec/dist/
+       cp -fL "$img" kernel_platform/dist/
+       if [ -d device/qcom/gki-kernel ]; then
+        cp -fL "$img" device/qcom/gki-kernel/
+       fi
+      done
+      ls -lh sec/dist/
+     fi
       
   - name: start make build
     if: inputs.build_type == 'make'

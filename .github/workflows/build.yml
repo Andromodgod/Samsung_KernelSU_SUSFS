@@ -185,11 +185,7 @@ jobs:
       - name: Add BakaSU
         if: inputs.ksun == 'true'
         run: |
-          if [ -d "$CONFIG/common" ]; then
-            KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG/common"
-          else
-            KERNEL_ROOT="$GITHUB_WORKSPACE/$CONFIG"
-          fi
+          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
           cd "$KERNEL_ROOT"
@@ -243,7 +239,7 @@ jobs:
       - name: Enforce BakaSU Kconfig Flags
         if: inputs.ksun == 'true'
         run: |
-          DEFCONFIG="$KERNEL_ROOT/arch/arm64/configs/gki_defconfig"
+          DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
@@ -339,7 +335,7 @@ jobs:
           echo "# Kernel Build Summary" > build_summary.md
           echo "## ${{ env.FILE_NAME }}" >> build_summary.md
           echo "## Build Information" >> build_summary.md
-          echo "- **Branch**: ${{ inputs.branch }}" >> build_summary.md
+          echo "- **Android Version**: ${ANDROID_VER}" >> build_summary.md
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **BBG**: Installed" >> build_summary.md
           echo "" >> build_summary.md

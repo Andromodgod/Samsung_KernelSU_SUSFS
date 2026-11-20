@@ -25,7 +25,7 @@ on:
           - default
           - thin
           - full
-        default: default
+        default: full
 
       ksun:
         description: "BakaSU"
@@ -36,44 +36,44 @@ on:
       susfs:
         description: "SUSFS"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       nomount:
         description: "NoMount"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       bbg:
         description: "BBG"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       unicodefix:
         description: "Unicode fix"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       droidspace:
         description: "Droidspaces"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       ntsync:
         description: "NTsync"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       bbrv3:
         description: "bbrv3"
         required: false
-        type: boolean
         default: true
+        type: boolean
 
       cache:
         description: "CCache"
@@ -82,22 +82,22 @@ on:
         type: boolean
 
       ipv6_nat:
-       description: "IPv6_NAT & IP-SET"
-       required: false
-       default: true
-       type: boolean
+        description: "IPv6_NAT & IP-SET"
+        required: false
+        default: true
+        type: boolean
 
       optimization:
-       description: "optimization patches"
-       required: false
-       default: true
-       type: boolean
+        description: "optimization patches"
+        required: false
+        default: true
+        type: boolean
 
       ttl:
-       description: "TTL support"
-       required: false
-       default: true
-       type: boolean
+        description: "TTL support"
+        required: false
+        default: true
+        type: boolean
 
 jobs:
 
@@ -127,7 +127,7 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_NAME: "Samsung SM-S928B Kernel With BakaSU & SUSFS"
+      RELEASE_NAME: "Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS"
       RELEASE_BODY: ""
     steps:
       - name: Free Disk Space
@@ -196,6 +196,7 @@ jobs:
           cat <<'EOF' >> release_body.md
           -> SUSFS - https://gitlab.com/simonpunk/susfs4ksu
           -> SUSFS Inline hooks
+          -> /proc/config.gz Stealth Masking (hides KSU, KPM, BBG, TMPFS_XATTR, WireGuard, BBR)
           EOF
           fi
 
@@ -225,14 +226,17 @@ jobs:
 
           if [[ "${{ inputs.ntsync }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> NTSync - Provide high-performance, low-latency synchronization primitives compatible with the Windows NT kernel API
+          -> NTSync - High-performance, low-latency Windows NT synchronization primitives
+          -> Built-in Gamepad Support (Xbox/xpad, PlayStation DualSense/DS4, Nintendo Switch Pro/Joy-Con, Steam Controller)
+          -> USB Gadget HID & Mass Storage Support (USB Keyboard/Mouse & ISO mounting)
           EOF
           fi
 
           if [[ "${{ inputs.bbrv3 }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> TCP BBRV3 (better TCP congestion and faster internet)
-          -> CAKE and PIE qdisc Support - Better Net Schedulers
+          -> TCP BBRv3 (Default) - Faster TCP congestion control active at boot
+          -> CAKE & FQ qdisc Support (Default) - Low-latency packet scheduling
+          -> Built-in WireGuard VPN Support
           EOF
           fi
 
@@ -250,7 +254,7 @@ jobs:
 
           if [[ "${{ inputs.optimization }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Kernel Optimization - Memory, I/O, CPU scheduler, network and other general tunings
+          -> Kernel Optimization - 300Hz display-aligned timer, 16ms PELT half-life, MGLRU active at boot, ZRAM Multi-Comp (Zstd), and F2FS Zstd compression
           EOF
           fi
 

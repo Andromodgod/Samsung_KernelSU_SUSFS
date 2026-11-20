@@ -148,7 +148,7 @@ runs:
          print(f"Patched {kbuild}")
      PYEOF
 
-      # 4. Apply KMI-safe optimizations, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
+      # 4. Apply KMI-safe optimizations, battery tweaks, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
       EFFECTIVE_LTO="$BUILD_LTO"
       if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
        EFFECTIVE_LTO="full"
@@ -172,19 +172,27 @@ runs:
 
      base_config_lines = [
          'CONFIG_LOCALVERSION="-Normie-Kernel"',
+         # 300Hz display-aligned kernel timer
          "# CONFIG_HZ_100 is not set",
          "# CONFIG_HZ_250 is not set",
          "# CONFIG_HZ_1000 is not set",
          "CONFIG_HZ_300=y",
          "CONFIG_HZ=300",
+         # Battery & Deep Sleep Optimizations (KMI-safe)
+         "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
+         "CONFIG_SUSPEND_SKIP_SYNC=y",
+         "# CONFIG_KSU_SUSFS_ENABLE_LOG is not set",
+         # MGLRU active at boot
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",
          "# CONFIG_LRU_GEN_STATS is not set",
+         # Zstd crypto & F2FS Zstd/LZ4 compression
          "CONFIG_CRYPTO_ZSTD=y",
          "CONFIG_F2FS_FS_COMPRESSION=y",
          "CONFIG_F2FS_FS_ZSTD=y",
          "CONFIG_F2FS_FS_LZ4=y",
          "CONFIG_F2FS_FS_LZ4HC=y",
+         # Built-in controller drivers
          "CONFIG_INPUT_JOYDEV=y",
          "CONFIG_INPUT_JOYSTICK=y",
          "CONFIG_JOYSTICK_XPAD=y",
@@ -198,8 +206,10 @@ runs:
          "CONFIG_SONY_FF=y",
          "CONFIG_HID_MICROSOFT=y",
          "CONFIG_HID_STEAM=y",
+         # USB Gadget HID & Mass Storage
          "CONFIG_USB_CONFIGFS_F_HID=y",
          "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
+         # Default BBRv3 + FQ pacing (with built-in CAKE) + WireGuard
          "CONFIG_TCP_CONG_ADVANCED=y",
          "# CONFIG_TCP_CONG_BIC is not set",
          "# CONFIG_TCP_CONG_WESTWOOD is not set",
@@ -240,6 +250,13 @@ runs:
          "CONFIG_DEFAULT_SFQ",
          "CONFIG_DEFAULT_CAKE",
          "CONFIG_ZRAM_MULTI_COMP",
+         "CONFIG_ZRAM_DEF_COMP_LZORLE",
+         "CONFIG_ZRAM_DEF_COMP_LZO",
+         "CONFIG_ZRAM_DEF_COMP_LZ4",
+         "CONFIG_ZRAM_DEF_COMP_LZ4HC",
+         "CONFIG_ZRAM_DEF_COMP_842",
+         "CONFIG_ZRAM_DEF_COMP_ZSTD",
+         "CONFIG_ZRAM_DEF_COMP",
          "CONFIG_ZSTD_COMPRESS",
          "CONFIG_ZSTD_DECOMPRESS",
          "CONFIG_INPUT_FF_MEMLESS",
@@ -285,8 +302,13 @@ runs:
          config_lines = list(base_config_lines)
 
          zram_kc = root / "drivers/block/zram/Kconfig"
-         if zram_kc.is_file() and re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", zram_kc.read_text(encoding="utf-8", errors="ignore"), flags=re.MULTILINE):
-             config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
+         if zram_kc.is_file():
+             ztxt = zram_kc.read_text(encoding="utf-8", errors="ignore")
+             if re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", ztxt, flags=re.MULTILINE):
+                 config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
+             if re.search(r"^\s*config\s+ZRAM_DEF_COMP_ZSTD\b", ztxt, flags=re.MULTILINE):
+                 config_lines.append("CONFIG_ZRAM_DEF_COMP_ZSTD=y")
+                 config_lines.append('CONFIG_ZRAM_DEF_COMP="zstd"')
 
          managed_keys = set(extra_strip_keys)
          for line in config_lines:

@@ -32,7 +32,7 @@ runs:
        fi
       done
 
-      # 2. Resolve BakaSU/KernelSU commit count and mirror UAPI headers for Bazel sandbox
+      # 2. Resolve BakaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
       KSU_REPO=""
       for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
        if [ -d "$repo/.git" ]; then
@@ -47,24 +47,34 @@ runs:
       fi
       echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
 
-      for uapi_src in \
-       "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
-       "$KERNEL_DIR/drivers/kernelsu/uapi" \
+      UAPI_SRC=""
+      for candidate in \
+       "$KSU_REPO/uapi" \
        "$KSU_REPO/kernel/include/uapi" \
        "$KSU_REPO/kernel/uapi" \
-       "$KSU_REPO/uapi"; do
-       if [ -d "$uapi_src" ]; then
-        for dest in \
-         "$KERNEL_DIR/drivers/kernelsu/uapi" \
-         "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
-         "$KERNEL_DIR/drivers/kernelsu/preinit/runner/uapi"; do
-         if [ -d "$(dirname "$dest")" ]; then
-          mkdir -p "$dest"
-          cp -rn "$uapi_src/." "$dest/" || true
-         fi
-        done
+       "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+       "$KERNEL_DIR/drivers/kernelsu/uapi"; do
+       if [ -d "$candidate" ]; then
+        UAPI_SRC=$(readlink -f "$candidate")
+        break
        fi
       done
+
+      if [ -n "$UAPI_SRC" ] && [ -d "$UAPI_SRC" ]; then
+       echo "Materializing UAPI headers from $UAPI_SRC"
+       for dest in \
+        "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+        "$KERNEL_DIR/drivers/kernelsu/uapi" \
+        "$KERNEL_DIR/drivers/kernelsu/preinit/runner/uapi"; do
+        if [ -d "$(dirname "$dest")" ]; then
+         if [ -L "$dest" ]; then
+          rm -f "$dest"
+         fi
+         mkdir -p "$dest"
+         cp -rfL "$UAPI_SRC/." "$dest/"
+        fi
+       done
+      fi
 
       # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I into runner.elf rules
       python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'

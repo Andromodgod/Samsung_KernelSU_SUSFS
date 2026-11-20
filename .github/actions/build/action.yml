@@ -47,42 +47,46 @@ runs:
       fi
       echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
 
-      python3 -c 'import pathlib, re, sys, textwrap; exec(textwrap.dedent("""
-      kernel_dir = pathlib.Path(sys.argv[1])
-      ksu_ver = sys.argv[2]
-      targets = [
-          kernel_dir / "drivers/kernelsu/Kbuild",
-          kernel_dir / "KernelSU/kernel/Kbuild",
-          kernel_dir / "BakaSU/kernel/Kbuild",
-      ]
-      for kbuild in targets:
-          if not kbuild.is_file():
-              continue
-          text = kbuild.read_text(encoding="utf-8", errors="ignore")
-          text = re.sub(
-              r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
-              "KSU_SRC := $(srctree)/drivers/kernelsu",
-              text,
-              flags=re.MULTILINE,
-          )
-          if "KSU_SRC :=" not in text:
-              text = "KSU_SRC := $(srctree)/drivers/kernelsu\n" + text
-          text = re.sub(
-              r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
-              "$(warning",
-              text,
-          )
-          text = re.sub(
-              r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
-              f"KSU_VERSION := {ksu_ver}",
-              text,
-              flags=re.MULTILINE,
-          )
-          if "KSU_VERSION :=" not in text:
-              text = f"KSU_VERSION := {ksu_ver}\n" + text
-          kbuild.write_text(text, encoding="utf-8")
-          print(f"Patched {kbuild}")
-      """))' "$KERNEL_DIR" "$KSU_VER"
+      python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
+     import pathlib, re, sys
+
+     kernel_dir = pathlib.Path(sys.argv[1])
+     ksu_ver = sys.argv[2]
+
+     targets = [
+         kernel_dir / "drivers/kernelsu/Kbuild",
+         kernel_dir / "KernelSU/kernel/Kbuild",
+         kernel_dir / "BakaSU/kernel/Kbuild",
+     ]
+
+     for kbuild in targets:
+         if not kbuild.is_file():
+             continue
+         text = kbuild.read_text(encoding="utf-8", errors="ignore")
+         text = re.sub(
+             r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
+             "KSU_SRC := $(srctree)/drivers/kernelsu",
+             text,
+             flags=re.MULTILINE,
+         )
+         if "KSU_SRC :=" not in text:
+             text = "KSU_SRC := $(srctree)/drivers/kernelsu\n" + text
+         text = re.sub(
+             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
+             "$(warning",
+             text,
+         )
+         text = re.sub(
+             r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
+             f"KSU_VERSION := {ksu_ver}",
+             text,
+             flags=re.MULTILINE,
+         )
+         if "KSU_VERSION :=" not in text:
+             text = f"KSU_VERSION := {ksu_ver}\n" + text
+         kbuild.write_text(text, encoding="utf-8")
+         print(f"Patched {kbuild}")
+     PYEOF
 
       # 3. Enforce Normie-Kernel localversion
       DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"

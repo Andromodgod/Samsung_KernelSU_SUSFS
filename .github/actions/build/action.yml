@@ -148,7 +148,7 @@ runs:
          print(f"Patched {kbuild}")
      PYEOF
 
-      # 4. Apply KMI-safe optimizations, battery tweaks, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
+      # 4. Apply KMI-safe optimizations, battery tweaks, drivers, 24ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
       EFFECTIVE_LTO="$BUILD_LTO"
       if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
        EFFECTIVE_LTO="full"
@@ -172,12 +172,12 @@ runs:
 
      base_config_lines = [
          'CONFIG_LOCALVERSION="-Normie-Kernel"',
-         # 300Hz display-aligned kernel timer
+         # 250Hz low-overhead kernel timer (reduced interrupt wakeups for battery life)
          "# CONFIG_HZ_100 is not set",
-         "# CONFIG_HZ_250 is not set",
+         "# CONFIG_HZ_300 is not set",
          "# CONFIG_HZ_1000 is not set",
-         "CONFIG_HZ_300=y",
-         "CONFIG_HZ=300",
+         "CONFIG_HZ_250=y",
+         "CONFIG_HZ=250",
          # Battery & Deep Sleep Optimizations (KMI-safe)
          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
          "CONFIG_SUSPEND_SKIP_SYNC=y",
@@ -276,7 +276,7 @@ runs:
          "tcp_bbr.ko",
      )
 
-     halflife = 16
+     halflife = 24
      y = 0.5 ** (1.0 / halflife)
      inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
      sum_vals = []
@@ -360,7 +360,7 @@ runs:
                  ctxt = re.sub(r"static const u32 runnable_avg_yN_sum\[\]\s*=\s*\{[^}]*\};", sum_block, ctxt, flags=re.DOTALL)
                  pelt_h.write_text(htxt, encoding="utf-8")
                  pelt_c.write_text(ctxt, encoding="utf-8")
-                 print(f"Applied 16ms PELT half-life in {root}")
+                 print(f"Applied {halflife}ms PELT half-life in {root}")
 
          # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
          k_mk = root / "kernel/Makefile"

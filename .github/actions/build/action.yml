@@ -148,13 +148,13 @@ runs:
          print(f"Patched {kbuild}")
      PYEOF
 
-      # 4. Apply KMI-safe optimizations, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel version across common & msm-kernel
+      # 4. Apply KMI-safe optimizations, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
       EFFECTIVE_LTO="$BUILD_LTO"
       if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
        EFFECTIVE_LTO="full"
       fi
 
-      python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" << 'PYEOF'
+      python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" << 'PYEOF'
      import os, pathlib, re, sys
 
      roots = []
@@ -168,28 +168,23 @@ runs:
                  roots.append(p)
 
      lto_mode = sys.argv[3]
+     kp_dir = pathlib.Path(sys.argv[4])
 
-     # Only user-selectable Kconfig symbols with satisfied parent menus (avoids check_merged_defconfig drops)
      base_config_lines = [
-         # Branding
          'CONFIG_LOCALVERSION="-Normie-Kernel"',
-         # 300Hz display-aligned kernel timer
          "# CONFIG_HZ_100 is not set",
          "# CONFIG_HZ_250 is not set",
          "# CONFIG_HZ_1000 is not set",
          "CONFIG_HZ_300=y",
          "CONFIG_HZ=300",
-         # MGLRU active at boot
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",
          "# CONFIG_LRU_GEN_STATS is not set",
-         # Zstd crypto & F2FS Zstd/LZ4 compression
          "CONFIG_CRYPTO_ZSTD=y",
          "CONFIG_F2FS_FS_COMPRESSION=y",
          "CONFIG_F2FS_FS_ZSTD=y",
          "CONFIG_F2FS_FS_LZ4=y",
          "CONFIG_F2FS_FS_LZ4HC=y",
-         # Built-in controller drivers (with parent CONFIG_INPUT_JOYSTICK=y)
          "CONFIG_INPUT_JOYDEV=y",
          "CONFIG_INPUT_JOYSTICK=y",
          "CONFIG_JOYSTICK_XPAD=y",
@@ -203,10 +198,8 @@ runs:
          "CONFIG_SONY_FF=y",
          "CONFIG_HID_MICROSOFT=y",
          "CONFIG_HID_STEAM=y",
-         # USB Gadget HID & Mass Storage (auto-selects USB_F_MASS_STORAGE)
          "CONFIG_USB_CONFIGFS_F_HID=y",
          "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-         # Default BBRv3 + FQ pacing (with built-in CAKE) + WireGuard; disable extra default-m TCP modules
          "CONFIG_TCP_CONG_ADVANCED=y",
          "# CONFIG_TCP_CONG_BIC is not set",
          "# CONFIG_TCP_CONG_WESTWOOD is not set",
@@ -267,7 +260,6 @@ runs:
          "tcp_bbr.ko",
      )
 
-     # Precompute exact 16ms PELT half-life tables (HALFLIFE = 16)
      halflife = 16
      y = 0.5 ** (1.0 / halflife)
      inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
@@ -292,7 +284,6 @@ runs:
          print(f"Configuring kernel tree: {root}")
          config_lines = list(base_config_lines)
 
-         # Only enable ZRAM_MULTI_COMP if backported into this tree's zram Kconfig
          zram_kc = root / "drivers/block/zram/Kconfig"
          if zram_kc.is_file() and re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", zram_kc.read_text(encoding="utf-8", errors="ignore"), flags=re.MULTILINE):
              config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
@@ -312,7 +303,6 @@ runs:
                  out.append(ln)
              return "\n".join(out) + "\n"
 
-         # A. Patch gki_defconfig & strip conflicting LOCALVERSION/overrides in fragments
          gki_cfg = root / "arch/arm64/configs/gki_defconfig"
          if gki_cfg.is_file():
              cleaned = strip_managed(gki_cfg.read_text(encoding="utf-8", errors="ignore"))
@@ -330,7 +320,6 @@ runs:
                      if any(k in stxt for k in managed_keys):
                          sec_cfg.write_text(strip_managed(stxt), encoding="utf-8")
 
-         # B. Remove promoted built-in modules from modules.bzl so Kleaf doesn't fail on missing .ko
          for bzl in root.glob("**/modules.bzl"):
              btxt = bzl.read_text(encoding="utf-8", errors="ignore")
              new_lines = [ln for ln in btxt.splitlines() if not any(ln.strip().endswith(ko + '",') or ln.strip().endswith(ko + '"') for ko in builtin_kos)]
@@ -338,7 +327,6 @@ runs:
                  bzl.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
                  print(f"Updated {bzl} for built-in modules")
 
-         # C. Apply exact 16ms PELT half-life tables
          pelt_h = root / "kernel/sched/pelt.h"
          pelt_c = root / "kernel/sched/pelt.c"
          if pelt_h.is_file() and pelt_c.is_file():
@@ -353,27 +341,43 @@ runs:
                  pelt_c.write_text(ctxt, encoding="utf-8")
                  print(f"Applied 16ms PELT half-life in {root}")
 
-         # D. Mask root/stealth configs in /proc/config.gz (cmd_ikconfig in kernel/Makefile)
+         # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
          k_mk = root / "kernel/Makefile"
          if k_mk.is_file():
              mtxt = k_mk.read_text(encoding="utf-8", errors="ignore")
-             spoof_sed = (
-                 "sed -E '"
-                 "s/^CONFIG_(KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*=.*/# CONFIG_\\1 is not set/; "
-                 "s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
-                 's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/\' '
-             )
              if "cmd_ikconfig" in mtxt and "CONFIG_KPM" not in mtxt:
-                 mtxt_new = re.sub(
-                     r"(cmd_ikconfig\s*=\s*cat\s+\$<\s*\|)",
-                     r"cmd_ikconfig = " + spoof_sed + r"$< |",
-                     mtxt,
+                 spoof_rhs = (
+                     "(sed -E '"
+                     r"s/^(CONFIG_(?:KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*)=.*/# \1 is not set/; "
+                     r"s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
+                     r's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/'
+                     "' $< | $(KGZIP) -n -f -9 > $@)"
                  )
-                 if mtxt_new != mtxt:
+                 mtxt_new, count = re.subn(
+                     r"^([ \t]*cmd_ikconfig\s*=\s*).*$",
+                     lambda m: m.group(1) + spoof_rhs,
+                     mtxt,
+                     flags=re.MULTILINE,
+                 )
+                 if count > 0:
                      k_mk.write_text(mtxt_new, encoding="utf-8")
                      print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
 
-         # E. Guarantee -Normie-Kernel in UTS_RELEASE (Software Information -> Kernel version)
+         # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel (bypasses Kleaf --kleaf_localversion)
+         top_mk = root / "Makefile"
+         if top_mk.is_file():
+             tmtxt = top_mk.read_text(encoding="utf-8", errors="ignore")
+             if "filechk_kernel.release" in tmtxt and "Normie-Kernel" not in tmtxt:
+                 tmtxt_new = re.sub(
+                     r'(define filechk_kernel\.release\s*\n\s*)echo\s+"([^"]+)"',
+                     r'\1v="\2"; case "$$v" in *-Normie-Kernel*) echo "$$v" ;; *) echo "$$v-Normie-Kernel" ;; esac',
+                     tmtxt,
+                 )
+                 if tmtxt_new != tmtxt:
+                     top_mk.write_text(tmtxt_new, encoding="utf-8")
+                     print(f"Patched filechk_kernel.release in {top_mk}")
+
+         # E2. Also patch scripts/setlocalversion for non-Kleaf fallback paths
          setlocal = root / "scripts/setlocalversion"
          if setlocal.is_file():
              sltxt = setlocal.read_text(encoding="utf-8", errors="ignore")
@@ -388,20 +392,20 @@ runs:
                  setlocal.write_text(sltxt, encoding="utf-8")
                  print(f"Patched UTS_RELEASE branding in {setlocal}")
 
-         for bcfg in root.glob("build.config*"):
-             if bcfg.is_file():
-                 btxt = bcfg.read_text(encoding="utf-8", errors="ignore")
-                 if re.search(r"^\s*(?:export\s+)?LOCALVERSION=", btxt, flags=re.MULTILINE):
-                     btxt = re.sub(
-                         r"^\s*(?:export\s+)?LOCALVERSION=.*$",
-                         'export LOCALVERSION="-Normie-Kernel"',
-                         btxt,
-                         flags=re.MULTILINE,
-                     )
-                     bcfg.write_text(btxt, encoding="utf-8")
-
          for lv in root.glob("localversion*"):
              lv.unlink(missing_ok=True)
+
+     # E3. Patch Kleaf stamp.bzl so Bazel's embedded localversion also appends -Normie-Kernel
+     stamp_bzl = kp_dir / "build/kernel/kleaf/impl/stamp.bzl"
+     if stamp_bzl.is_file():
+         sbtxt = stamp_bzl.read_text(encoding="utf-8", errors="ignore")
+         if "Normie-Kernel" not in sbtxt and 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}"' in sbtxt:
+             sbtxt = sbtxt.replace(
+                 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}"',
+                 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}-Normie-Kernel"',
+             )
+             stamp_bzl.write_text(sbtxt, encoding="utf-8")
+             print(f"Patched Kleaf scmversion in {stamp_bzl}")
      PYEOF
      fi
 
@@ -444,7 +448,7 @@ runs:
       tools/bazel build $BAZEL_LTO //common:kernel_aarch64
      fi
 
-     # 5. Copy built kernel Image out of Bazel cache into dist directories for downstream packaging
+     # 5. Copy built kernel Image out of Bazel cache into dist directories and verify embedded Linux version string
      if [ -d kernel_platform ]; then
       mkdir -p sec/dist kernel_platform/dist
       mapfile -t BAZEL_IMAGES < <(
@@ -464,6 +468,10 @@ runs:
        fi
       done
       ls -lh sec/dist/
+      if [ -f sec/dist/Image ]; then
+       echo "=== Embedded Kernel Version Banner ==="
+       strings sec/dist/Image | grep -m 3 "Linux version " || true
+      fi
      fi
       
   - name: start make build

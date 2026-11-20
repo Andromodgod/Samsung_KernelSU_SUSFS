@@ -32,7 +32,7 @@ runs:
        fi
       done
 
-      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC, KSU_VERSION, and uapi headers
+      # 2. Resolve BakaSU/KernelSU commit count and mirror UAPI headers for Bazel sandbox
       KSU_REPO=""
       for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
        if [ -d "$repo/.git" ]; then
@@ -42,35 +42,37 @@ runs:
       done
       if [ -n "$KSU_REPO" ]; then
        KSU_VER=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "12000")
-       if [ -d "$KSU_REPO/uapi" ] && [ ! -d "$KERNEL_DIR/drivers/kernelsu/uapi" ]; then
-        cp -r "$KSU_REPO/uapi" "$KERNEL_DIR/drivers/kernelsu/uapi"
-       fi
       else
        KSU_VER="12000"
       fi
       echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
 
+      for uapi_src in \
+       "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+       "$KERNEL_DIR/drivers/kernelsu/uapi" \
+       "$KSU_REPO/kernel/include/uapi" \
+       "$KSU_REPO/kernel/uapi" \
+       "$KSU_REPO/uapi"; do
+       if [ -d "$uapi_src" ]; then
+        for dest in \
+         "$KERNEL_DIR/drivers/kernelsu/uapi" \
+         "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+         "$KERNEL_DIR/drivers/kernelsu/preinit/runner/uapi"; do
+         if [ -d "$(dirname "$dest")" ]; then
+          mkdir -p "$dest"
+          cp -rn "$uapi_src/." "$dest/" || true
+         fi
+        done
+       fi
+      done
+
+      # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I into runner.elf rules
       python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
      import pathlib, re, sys
 
      kernel_dir = pathlib.Path(sys.argv[1])
      ksu_ver = sys.argv[2]
-     ksu_dir = kernel_dir / "drivers/kernelsu"
-
-     inc_dirs = [
-         "$(srctree)/drivers/kernelsu",
-         "$(srctree)/drivers/kernelsu/include",
-     ]
-     if ksu_dir.is_dir():
-         for hdr in ksu_dir.rglob("supercall.h"):
-             parent = hdr.parent.parent if hdr.parent.name == "uapi" else hdr.parent
-             rel = parent.relative_to(kernel_dir).as_posix()
-             flag = f"$(srctree)/{rel}"
-             if flag not in inc_dirs:
-                 inc_dirs.append(flag)
-             print(f"Found supercall.h at {hdr.relative_to(kernel_dir)} -> -I{flag}")
-
-     inc_flags = " ".join(f"-I{d}" for d in inc_dirs)
+     inc_flags = "-I$(srctree)/drivers/kernelsu -I$(srctree)/drivers/kernelsu/include"
 
      targets = [
          kernel_dir / "drivers/kernelsu/Kbuild",
@@ -82,18 +84,20 @@ runs:
          if not kbuild.is_file():
              continue
          text = kbuild.read_text(encoding="utf-8", errors="ignore")
+
+         # Neutralize submodule $(error ...) without breaking multi-line parentheses
+         text = re.sub(
+             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
+             "$(warning",
+             text,
+         )
+
+         # Normalize KSU_SRC and KSU_VERSION assignments
          text = re.sub(
              r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
              "KSU_SRC := $(srctree)/drivers/kernelsu",
              text,
              flags=re.MULTILINE,
-         )
-         if "KSU_SRC :=" not in text:
-             text = "KSU_SRC := $(srctree)/drivers/kernelsu\n" + text
-         text = re.sub(
-             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
-             "$(warning",
-             text,
          )
          text = re.sub(
              r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
@@ -101,14 +105,49 @@ runs:
              text,
              flags=re.MULTILINE,
          )
-         if "KSU_VERSION :=" not in text:
-             text = f"KSU_VERSION := {ksu_ver}\n" + text
-         text += f"\nccflags-y += {inc_flags}\nsubdir-ccflags-y += {inc_flags}\n"
-         kbuild.write_text(text, encoding="utf-8")
-         print(f"Patched {kbuild} with {inc_flags}")
+
+         header = (
+             "KSU_SRC := $(srctree)/drivers/kernelsu\n"
+             f"KSU_VERSION := {ksu_ver}\n"
+             f"KSU_EXTRA_INC := {inc_flags}\n"
+         )
+
+         # Statefully patch any target block or cmd_* variable building runner.elf
+         patched_lines = []
+         in_runner_rule = False
+         for line in text.splitlines():
+             stripped = line.strip()
+             if not line.startswith("\t"):
+                 if re.match(r"^(?:quiet_)?cmd_.*runner.*=", stripped):
+                     if "$(KSU_EXTRA_INC)" not in line:
+                         line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
+                     in_runner_rule = line.endswith("\\")
+                 elif ":" in line and not stripped.startswith("#") and "=" not in line.split(":", 1)[0]:
+                     target_part = line.split(":", 1)[0]
+                     in_runner_rule = "runner" in target_part
+                 elif not line.endswith("\\"):
+                     in_runner_rule = False
+             elif in_runner_rule and "$(KSU_EXTRA_INC)" not in line:
+                 if re.search(r"(\$\(CC\)|\bclang\b|\bgcc\b)", line):
+                     line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
+                 elif " -o " in line:
+                     line = line.replace(" -o ", " $(KSU_EXTRA_INC) -o ", 1)
+             patched_lines.append(line)
+
+         footer = (
+             "\nccflags-y += $(KSU_EXTRA_INC)\n"
+             "subdir-ccflags-y += $(KSU_EXTRA_INC)\n"
+         )
+         kbuild.write_text(header + "\n".join(patched_lines) + footer, encoding="utf-8")
+         print(f"Patched {kbuild}")
      PYEOF
 
-      # 3. Enforce Normie-Kernel localversion
+      if [ -f "$KERNEL_DIR/drivers/kernelsu/Kbuild" ]; then
+       echo "=== Patched drivers/kernelsu/Kbuild ==="
+       nl -ba "$KERNEL_DIR/drivers/kernelsu/Kbuild"
+      fi
+
+      # 4. Enforce Normie-Kernel localversion
       DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"
       if [ -f "$DEFCONFIG" ]; then
        sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"

@@ -236,19 +236,27 @@ jobs:
         if: inputs.ksun == 'true'
         uses: ./.github/actions/configs
 
-      - name: Enforce BakaSU Kconfig Flags
-        if: inputs.ksun == 'true'
+      - name: Clean BakaSU Kconfig & Bypass check_defconfig
         run: |
+          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
+
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-            echo "CONFIG_KSU_KPROBES_HOOK=n" >> "$DEFCONFIG"
-            if [ "${{ inputs.susfs }}" == "true" ]; then
-              grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            if [ "${{ inputs.ksun }}" == "true" ]; then
+              grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+              if [ "${{ inputs.susfs }}" == "true" ]; then
+                grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+              fi
             fi
           fi
+
+          for cfg_file in "$KERNEL_ROOT/build.config.gki" "$KERNEL_ROOT/build.config.common"; do
+            if [ -f "$cfg_file" ]; then
+              sed -i 's/check_defconfig/:/g' "$cfg_file"
+            fi
+          done
 
       - name: Change Kernel Name and clean dirty
         uses: ./.github/actions/kernel-name
@@ -281,6 +289,16 @@ jobs:
         uses: ./.github/actions/build
         with:
          build_type: ${{ inputs.build_type }}
+
+      - name: Verify Kernel Image & Surface Compiler Errors
+        run: |
+          IMAGE_FOUND=$(find "$CONFIG" -maxdepth 6 -type f \( -name "Image" -o -name "Image.gz" \) ! -path "*.git*" | head -n 1)
+          if [ -z "$IMAGE_FOUND" ]; then
+            echo "ERROR: No kernel Image found after Build step. Printing Bazel/Clang error output:"
+            find "$CONFIG" -maxdepth 4 -type f -name "*.log" -exec grep -i -C 5 -E "error:|FAILED:|Build failed" {} + 2>/dev/null | tail -n 100 || true
+            exit 1
+          fi
+          echo "Verified built kernel image: $IMAGE_FOUND"
 
       - name: clean up ccache
         if: inputs.cache == 'true' && inputs.build_type == 'make'

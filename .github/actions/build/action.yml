@@ -206,7 +206,7 @@ runs:
          # USB Gadget HID & Mass Storage (auto-selects USB_F_MASS_STORAGE)
          "CONFIG_USB_CONFIGFS_F_HID=y",
          "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-         # Default BBRv3 + CAKE (with parent CONFIG_TCP_CONG_ADVANCED=y & CONFIG_NET_SCHED=y) + WireGuard
+         # Default BBRv3 + FQ pacing (with built-in CAKE) + WireGuard
          "CONFIG_TCP_CONG_ADVANCED=y",
          "CONFIG_TCP_CONG_BBR=y",
          "CONFIG_DEFAULT_BBR=y",
@@ -215,8 +215,8 @@ runs:
          "CONFIG_NET_SCH_CAKE=y",
          "CONFIG_NET_SCH_FQ=y",
          "CONFIG_NET_SCH_DEFAULT=y",
-         "CONFIG_DEFAULT_CAKE=y",
-         'CONFIG_DEFAULT_NET_SCH="cake"',
+         "CONFIG_DEFAULT_FQ=y",
+         'CONFIG_DEFAULT_NET_SCH="fq"',
          "CONFIG_WIREGUARD=y",
      ]
 
@@ -240,7 +240,9 @@ runs:
          "CONFIG_DEFAULT_RENO",
          "CONFIG_DEFAULT_PFIFO_FAST",
          "CONFIG_DEFAULT_FQ_CODEL",
-         "CONFIG_DEFAULT_FQ",
+         "CONFIG_DEFAULT_CODEL",
+         "CONFIG_DEFAULT_SFQ",
+         "CONFIG_DEFAULT_CAKE",
          "CONFIG_ZRAM_MULTI_COMP",
          "CONFIG_ZSTD_COMPRESS",
          "CONFIG_ZSTD_DECOMPRESS",

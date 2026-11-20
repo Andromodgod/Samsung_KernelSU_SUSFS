@@ -363,7 +363,7 @@ runs:
                      k_mk.write_text(mtxt_new, encoding="utf-8")
                      print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
 
-         # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel (bypasses Kleaf --kleaf_localversion)
+         # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel
          top_mk = root / "Makefile"
          if top_mk.is_file():
              tmtxt = top_mk.read_text(encoding="utf-8", errors="ignore")
@@ -395,14 +395,15 @@ runs:
          for lv in root.glob("localversion*"):
              lv.unlink(missing_ok=True)
 
-     # E3. Patch Kleaf stamp.bzl so Bazel's embedded localversion also appends -Normie-Kernel
+     # E3. Patch Kleaf stamp.bzl without literal '$' + '{{' so GitHub Actions does not parse it as an expression
      stamp_bzl = kp_dir / "build/kernel/kleaf/impl/stamp.bzl"
      if stamp_bzl.is_file():
          sbtxt = stamp_bzl.read_text(encoding="utf-8", errors="ignore")
-         if "Normie-Kernel" not in sbtxt and 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}"' in sbtxt:
+         target_str = 'scmversion="$' + '{{scmversion_prefix}}$' + '{{stable_scmversion}}"'
+         if "Normie-Kernel" not in sbtxt and target_str in sbtxt:
              sbtxt = sbtxt.replace(
-                 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}"',
-                 'scmversion="${{scmversion_prefix}}${{stable_scmversion}}-Normie-Kernel"',
+                 target_str,
+                 target_str[:-1] + '-Normie-Kernel"',
              )
              stamp_bzl.write_text(sbtxt, encoding="utf-8")
              print(f"Patched Kleaf scmversion in {stamp_bzl}")

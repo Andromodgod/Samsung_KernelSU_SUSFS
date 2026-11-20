@@ -20,7 +20,7 @@ runs:
      cd "$CONFIG"
      echo "Building the kernel..."
 
-     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, and Normie-Kernel branding)
+     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, optimizations, stealth, and Normie-Kernel branding)
      KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
      if [ -d "$KERNEL_DIR" ]; then
       # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
@@ -95,14 +95,11 @@ runs:
              continue
          text = kbuild.read_text(encoding="utf-8", errors="ignore")
 
-         # Neutralize submodule $(error ...) without breaking multi-line parentheses
          text = re.sub(
              r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
              "$(warning",
              text,
          )
-
-         # Normalize KSU_SRC and KSU_VERSION assignments
          text = re.sub(
              r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
              "KSU_SRC := $(srctree)/drivers/kernelsu",
@@ -122,7 +119,6 @@ runs:
              f"KSU_EXTRA_INC := {inc_flags}\n"
          )
 
-         # Statefully patch any target block or cmd_* variable building runner.elf
          patched_lines = []
          in_runner_rule = False
          for line in text.splitlines():
@@ -152,31 +148,255 @@ runs:
          print(f"Patched {kbuild}")
      PYEOF
 
-      if [ -f "$KERNEL_DIR/drivers/kernelsu/Kbuild" ]; then
-       echo "=== Patched drivers/kernelsu/Kbuild ==="
-       nl -ba "$KERNEL_DIR/drivers/kernelsu/Kbuild"
+      # 4. Apply KMI-safe optimizations, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel version across common & msm-kernel
+      EFFECTIVE_LTO="$BUILD_LTO"
+      if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
+       EFFECTIVE_LTO="full"
       fi
 
-      # 4. Enforce Normie-Kernel localversion
-      DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"
-      if [ -f "$DEFCONFIG" ]; then
-       sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
-       echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
-      fi
-      if [ -f "$KERNEL_DIR/scripts/setlocalversion" ]; then
-       sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_DIR/scripts/setlocalversion"
-      fi
-      rm -f "$KERNEL_DIR"/localversion*
+      python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" << 'PYEOF'
+     import os, pathlib, re, sys
+
+     roots = []
+     seen_real = set()
+     for raw in (sys.argv[1], sys.argv[2]):
+         p = pathlib.Path(raw)
+         if p.is_dir():
+             real = os.path.realpath(p)
+             if real not in seen_real:
+                 seen_real.add(real)
+                 roots.append(p)
+
+     lto_mode = sys.argv[3]
+
+     # Kconfig entries to append to base gki_defconfig (and strip conflicting overrides from vendor/oem fragments)
+     config_lines = [
+         # Branding
+         'CONFIG_LOCALVERSION="-Normie-Kernel"',
+         # 300Hz display-aligned kernel timer
+         "# CONFIG_HZ_100 is not set",
+         "# CONFIG_HZ_250 is not set",
+         "# CONFIG_HZ_1000 is not set",
+         "CONFIG_HZ_300=y",
+         "CONFIG_HZ=300",
+         # MGLRU active at boot
+         "CONFIG_LRU_GEN=y",
+         "CONFIG_LRU_GEN_ENABLED=y",
+         "# CONFIG_LRU_GEN_STATS is not set",
+         # ZRAM multi-compression & Zstd
+         "CONFIG_ZRAM_MULTI_COMP=y",
+         "CONFIG_CRYPTO_ZSTD=y",
+         "CONFIG_ZSTD_COMPRESS=y",
+         "CONFIG_ZSTD_DECOMPRESS=y",
+         # F2FS Zstd / LZ4 compression
+         "CONFIG_F2FS_FS_COMPRESSION=y",
+         "CONFIG_F2FS_FS_ZSTD=y",
+         "CONFIG_F2FS_FS_LZ4=y",
+         "CONFIG_F2FS_FS_LZ4HC=y",
+         # Built-in controller drivers (Winlator / Moonlight / Emulators)
+         "CONFIG_INPUT_JOYDEV=y",
+         "CONFIG_INPUT_FF_MEMLESS=y",
+         "CONFIG_JOYSTICK_XPAD=y",
+         "CONFIG_JOYSTICK_XPAD_FF=y",
+         "CONFIG_JOYSTICK_XPAD_LEDS=y",
+         "CONFIG_HID_PLAYSTATION=y",
+         "CONFIG_PLAYSTATION_FF=y",
+         "CONFIG_HID_NINTENDO=y",
+         "CONFIG_NINTENDO_FF=y",
+         "CONFIG_HID_SONY=y",
+         "CONFIG_SONY_FF=y",
+         "CONFIG_HID_MICROSOFT=y",
+         "CONFIG_HID_STEAM=y",
+         # USB Gadget HID & Mass Storage
+         "CONFIG_USB_CONFIGFS_F_HID=y",
+         "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
+         "CONFIG_USB_F_MASS_STORAGE=y",
+         # Default BBRv3 + CAKE & built-in WireGuard
+         "CONFIG_TCP_CONG_BBR=y",
+         "CONFIG_DEFAULT_BBR=y",
+         'CONFIG_DEFAULT_TCP_CONG="bbr"',
+         "CONFIG_NET_SCH_CAKE=y",
+         "CONFIG_NET_SCH_FQ=y",
+         "CONFIG_NET_SCH_DEFAULT=y",
+         "CONFIG_DEFAULT_CAKE=y",
+         'CONFIG_DEFAULT_NET_SCH="cake"',
+         "CONFIG_WIREGUARD=y",
+     ]
+
+     if lto_mode == "full":
+         config_lines += [
+             "CONFIG_LTO_CLANG=y",
+             "# CONFIG_LTO_NONE is not set",
+             "# CONFIG_LTO_CLANG_THIN is not set",
+             "CONFIG_LTO_CLANG_FULL=y",
+         ]
+     elif lto_mode == "thin":
+         config_lines += [
+             "CONFIG_LTO_CLANG=y",
+             "# CONFIG_LTO_NONE is not set",
+             "# CONFIG_LTO_CLANG_FULL is not set",
+             "CONFIG_LTO_CLANG_THIN=y",
+         ]
+
+     managed_keys = set()
+     for line in config_lines:
+         m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", line)
+         if m:
+             managed_keys.add(m.group(1))
+
+     def strip_managed(text: str) -> str:
+         out = []
+         for ln in text.splitlines():
+             m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", ln.strip())
+             if m and m.group(1) in managed_keys:
+                 continue
+             out.append(ln)
+         return "\n".join(out) + "\n"
+
+     # Built-in drivers that must not be expected as external .ko in modules.bzl
+     builtin_kos = (
+         "joydev.ko",
+         "xpad.ko",
+         "hid-playstation.ko",
+         "hid-nintendo.ko",
+         "hid-sony.ko",
+         "hid-microsoft.ko",
+         "hid-steam.ko",
+         "wireguard.ko",
+         "sch_cake.ko",
+         "sch_fq.ko",
+         "tcp_bbr.ko",
+     )
+
+     # Precompute exact 16ms PELT half-life tables (HALFLIFE = 16)
+     halflife = 16
+     y = 0.5 ** (1.0 / halflife)
+     inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
+     sum_vals = []
+     acc = 0
+     for i in range(32):
+         acc += int(1024 * (y ** (i + 1)))
+         sum_vals.append(acc)
+     load_avg_max = sum(int(1024 * (y ** i)) for i in range(1, 500)) + 1024
+
+     inv_block = "static const u32 runnable_avg_yN_inv[] = {\n"
+     for row in range(0, 32, 4):
+         inv_block += "\t" + ", ".join(f"0x{v:08x}" for v in inv_vals[row:row + 4]) + ",\n"
+     inv_block += "};"
+
+     sum_block = "static const u32 runnable_avg_yN_sum[] = {\n"
+     for row in range(0, 32, 8):
+         sum_block += "\t" + ", ".join(f"{v:5d}" for v in sum_vals[row:row + 8]) + ",\n"
+     sum_block += "};"
+
+     for root in roots:
+         print(f"Configuring kernel tree: {root}")
+
+         # A. Patch gki_defconfig & strip conflicting LOCALVERSION/overrides in fragments
+         gki_cfg = root / "arch/arm64/configs/gki_defconfig"
+         if gki_cfg.is_file():
+             cleaned = strip_managed(gki_cfg.read_text(encoding="utf-8", errors="ignore"))
+             gki_cfg.write_text(cleaned + "\n# Normie-Kernel additions\n" + "\n".join(config_lines) + "\n", encoding="utf-8")
+
+         cfg_dir = root / "arch/arm64/configs"
+         if cfg_dir.is_dir():
+             for frag in cfg_dir.rglob("*.config"):
+                 ftxt = frag.read_text(encoding="utf-8", errors="ignore")
+                 if "CONFIG_LOCALVERSION" in ftxt:
+                     frag.write_text(strip_managed(ftxt), encoding="utf-8")
+             for sec_cfg in cfg_dir.rglob("*_defconfig"):
+                 if sec_cfg != gki_cfg:
+                     stxt = sec_cfg.read_text(encoding="utf-8", errors="ignore")
+                     if "CONFIG_LOCALVERSION" in stxt:
+                         sec_cfg.write_text(strip_managed(stxt), encoding="utf-8")
+
+         # B. Remove promoted built-in modules from modules.bzl so Kleaf doesn't fail on missing .ko
+         for bzl in root.glob("**/modules.bzl"):
+             btxt = bzl.read_text(encoding="utf-8", errors="ignore")
+             new_lines = [ln for ln in btxt.splitlines() if not any(ln.strip().endswith(ko + '",') or ln.strip().endswith(ko + '"') for ko in builtin_kos)]
+             if len(new_lines) != len(btxt.splitlines()):
+                 bzl.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                 print(f"Updated {bzl} for built-in modules")
+
+         # C. Apply exact 16ms PELT half-life tables
+         pelt_h = root / "kernel/sched/pelt.h"
+         pelt_c = root / "kernel/sched/pelt.c"
+         if pelt_h.is_file() and pelt_c.is_file():
+             htxt = pelt_h.read_text(encoding="utf-8", errors="ignore")
+             ctxt = pelt_c.read_text(encoding="utf-8", errors="ignore")
+             if "LOAD_AVG_PERIOD 32" in htxt and "runnable_avg_yN_inv[]" in ctxt:
+                 htxt = htxt.replace("#define LOAD_AVG_PERIOD 32", f"#define LOAD_AVG_PERIOD {halflife}")
+                 htxt = re.sub(r"#define LOAD_AVG_MAX\s+\d+", f"#define LOAD_AVG_MAX {load_avg_max}", htxt)
+                 ctxt = re.sub(r"static const u32 runnable_avg_yN_inv\[\]\s*=\s*\{[^}]*\};", inv_block, ctxt, flags=re.DOTALL)
+                 ctxt = re.sub(r"static const u32 runnable_avg_yN_sum\[\]\s*=\s*\{[^}]*\};", sum_block, ctxt, flags=re.DOTALL)
+                 pelt_h.write_text(htxt, encoding="utf-8")
+                 pelt_c.write_text(ctxt, encoding="utf-8")
+                 print(f"Applied 16ms PELT half-life in {root}")
+
+         # D. Mask root/stealth configs in /proc/config.gz (cmd_ikconfig in kernel/Makefile)
+         k_mk = root / "kernel/Makefile"
+         if k_mk.is_file():
+             mtxt = k_mk.read_text(encoding="utf-8", errors="ignore")
+             spoof_sed = (
+                 "sed -E '"
+                 "s/^CONFIG_(KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*=.*/# CONFIG_\\1 is not set/; "
+                 "s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
+                 's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/\' '
+             )
+             if "cmd_ikconfig" in mtxt and "CONFIG_KPM" not in mtxt:
+                 mtxt_new = re.sub(
+                     r"(cmd_ikconfig\s*=\s*cat\s+\$<\s*\|)",
+                     r"cmd_ikconfig = " + spoof_sed + r"$< |",
+                     mtxt,
+                 )
+                 if mtxt_new != mtxt:
+                     k_mk.write_text(mtxt_new, encoding="utf-8")
+                     print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
+
+         # E. Guarantee -Normie-Kernel in UTS_RELEASE (Software Information -> Kernel version)
+         setlocal = root / "scripts/setlocalversion"
+         if setlocal.is_file():
+             sltxt = setlocal.read_text(encoding="utf-8", errors="ignore")
+             sltxt = sltxt.replace("-Wild", "").replace("-Haroon-Kernel", "")
+             if "Normie-Kernel" not in sltxt:
+                 sltxt = re.sub(
+                     r'^([ \t]*echo\s+"\$res")',
+                     'res="${res%-dirty}"\ncase "$res" in *-Normie-Kernel*) ;; *) res="${res}-Normie-Kernel" ;; esac\n\\1',
+                     sltxt,
+                     flags=re.MULTILINE,
+                 )
+                 setlocal.write_text(sltxt, encoding="utf-8")
+                 print(f"Patched UTS_RELEASE branding in {setlocal}")
+
+         for bcfg in root.glob("build.config*"):
+             if bcfg.is_file():
+                 btxt = bcfg.read_text(encoding="utf-8", errors="ignore")
+                 if re.search(r"^\s*(?:export\s+)?LOCALVERSION=", btxt, flags=re.MULTILINE):
+                     btxt = re.sub(
+                         r"^\s*(?:export\s+)?LOCALVERSION=.*$",
+                         'export LOCALVERSION="-Normie-Kernel"',
+                         btxt,
+                         flags=re.MULTILINE,
+                     )
+                     bcfg.write_text(btxt, encoding="utf-8")
+
+         for lv in root.glob("localversion*"):
+             lv.unlink(missing_ok=True)
+     PYEOF
      fi
 
-     # 1. Initialize variables as empty (clears them out for "default")
+     # 1. Initialize variables as empty (clears them out for "none")
      BAZEL_LTO=""
      SCRIPT_LTO=""
 
-     # 2. Only populate if explicit modifications are requested
-     if [[ "$BUILD_LTO" == "thin" || "$BUILD_LTO" == "full" ]]; then
-       BAZEL_LTO="--lto=$BUILD_LTO"
-       SCRIPT_LTO="LTO=$BUILD_LTO"
+     # 2. Default to Full Clang LTO unless thin/none is explicitly requested
+     EFFECTIVE_LTO="${BUILD_LTO:-full}"
+     if [[ "$EFFECTIVE_LTO" == "default" ]]; then
+       EFFECTIVE_LTO="full"
+     fi
+     if [[ "$EFFECTIVE_LTO" == "thin" || "$EFFECTIVE_LTO" == "full" ]]; then
+       BAZEL_LTO="--lto=$EFFECTIVE_LTO"
+       SCRIPT_LTO="LTO=$EFFECTIVE_LTO"
      fi
 
      if [[ $BRANCH == SM-A055* || $BRANCH == SM-X926B* || $BRANCH == SM-A146P* ]]; then

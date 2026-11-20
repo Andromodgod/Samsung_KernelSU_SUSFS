@@ -8,7 +8,7 @@
 [![SUSFS](https://img.shields.io/badge/SUSFS-v2.4.0%20Inline-orange?style=flat-square)](https://gitlab.com/simonpunk/susfs4ksu)
 [![LTO](https://img.shields.io/badge/Clang%20LTO-Full-red?style=flat-square)](https://llvm.org/)
 
-**Custom KMI-safe Android 14 (`6.1`) GKI kernel built with Bazel/Kleaf, featuring BakaSU, SuSFS v2.4.0 inline hooks, NoMount, Baseband-Guard, and low-latency scheduler/I/O tuning.**
+**Custom KMI-safe Android GKI kernel built with Bazel/Kleaf, featuring BakaSU, SuSFS v2.4.0 inline hooks, NoMount, Baseband-Guard, and low-latency scheduler/I/O tuning.**
 
 </div>
 
@@ -64,28 +64,36 @@ This software is provided for testing and educational purposes only. The maintai
 
 This repository includes custom GitHub Actions automation (`.github/actions/build/action.yml` and `.github/workflows/main.yml`) tailored for Samsung's Bazel/Kleaf GKI 2.0 build system:
 - **Sandbox Materialization:** Converts out-of-tree symlinks (`drivers/kernelsu`, `fs/nomount`, `security/baseband-guard`) and UAPI headers into real files compatible with Bazel's `processwrapper-sandbox`.
-- **Automated `Kbuild` & `UTS_RELEASE` Patching:** Resolves host `.git` commit counts for `KSU_VERSION`, injects UAPI include paths for `preinit/runner.elf`, synchronizes Kconfig fragments across `common` and `msm-kernel`, and appends `-Normie-Kernel` to the kernel version string.
+- **Automated `Kbuild` & `UTS_RELEASE` Patching:** Resolves host `.git` commit counts for `KSU_VERSION`, injects UAPI include paths for `preinit/runner.elf`, synchronizes Kconfig fragments across `common` and `msm-kernel`, and embeds `-Normie-Kernel` directly into `Makefile` (`filechk_kernel.release`) and Kleaf's `stamp.bzl`.
 - **Artifact Extraction:** Automatically extracts built `Image`, `Image.gz`, and `Image.lz4` binaries from `bazel-bin` into `AnyKernel3` flashable zips.
 
 ---
 
-## 📋 Installation & Post-Flash Verification
+## 🛠️ Forking & Building for Your Own Variant (One UI 6 / 7 / 8)
 
-### Flashing
-1. Download the latest `*-AnyKernel3.zip` from **GitHub Releases** (or GitHub Actions workflow artifacts).
-2. Flash the zip using a compatible kernel flasher such as **[KernelFlasher](https://github.com/fatalcoder524/KernelFlasher)** or **[Horizon Kernel Flasher](https://github.com/libxzr/HorizonKernelFlasher)**.
-3. Reboot and verify the active kernel version under **Settings → About phone → Software information → Kernel version** (`...-Normie-Kernel`).
+You can fork this repository and adapt the CI pipeline to compile custom kernels for other Galaxy models, One UI versions, and Linux kernel branches.
 
-### Quick `adb shell` Verification
-```bash
-# Confirm Normie-Kernel branding
-uname -r
+### 1. One UI & Kernel Version Compatibility Matrix
 
-# Confirm BBR congestion control & FQ default qdisc
-sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+Identify your device's exact **GKI / Linux kernel version** and **build system** before creating your branch (check **Settings → About phone → Software information → Kernel version** on your target firmware):
 
-# Confirm MGLRU is active at boot (0x0007)
-cat /sys/kernel/mm/lru_gen/enabled
+| One UI Version | Example Galaxy Devices | SoC Platform | Kernel Version | SuSFS Branch | Build Type (`build_type`) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **One UI 8 / 7** | S25 / S25+ / S25 Ultra (`SM-S931*`, `SM-S936*`, `SM-S938*`) | Snapdragon 8 Elite | `android15-6.6` | `gki-android15-6.6` | `Bazel` (`build_kernel_GKI.sh`) |
+| **One UI 8 / 7** | Galaxy A56 (`SM-A566*`) | Exynos 1580 (`s5e8855`) | `android15-6.6` | `gki-android15-6.6` | `Bazel` (`//exynos/device/mx/mx8855:mx8855`) |
+| **One UI 8 / 7 / 6.1** | S24 / S24+ / S24 Ultra (`SM-S921*`, `SM-S926*`, `SM-S928*`), Z Fold6 / Flip6 | Snapdragon 8 Gen 3 (`pineapple`) | `android14-6.1` | `gki-android14-6.1` | `Bazel` (`build_kernel_GKI.sh`) |
+| **One UI 8 / 7 / 6.1** | S24 / S24+ (`SM-S921B`, `SM-S926B`), Galaxy A55 (`SM-A556*`) | Exynos 2400 / 1480 (`s5e9945` / `s5e8845`) | `android14-6.1` | `gki-android14-6.1` | `Bazel` (`//projects/s5e9945:s5e9945_user`) |
+| **One UI 7 / 6.1 / 6.0** | S23 / S23+ / S23 Ultra (`SM-S911*`, `SM-S916*`, `SM-S918*`), Z Fold5 / Flip5 | Snapdragon 8 Gen 2 (`kalama`) | `android13-5.15` | `gki-android13-5.15` | `Bazel` (`build_kernel_GKI.sh`) |
+| **One UI 7 / 6.1 / 6.0** | S22 Series (`SM-S908*`), Galaxy A54 (`SM-A546*`) | Snapdragon 8 Gen 1 / Exynos 1380 | `android12-5.10` | `gki-android12-5.10` | `Bazel` or `make` |
+| **One UI 6.x / 7** | Legacy / Entry Devices (`SM-A055*`, `SM-A146P*`, `SM-X926B*`) | MediaTek / Older Exynos / QCOM | `4.19` / `5.4` / `5.10` (Non-GKI) | Kernel-version matched | `make` (`build_kernel.sh`) |
 
-# Confirm /proc/config.gz stealth masking and 300Hz timer
-zcat /proc/config.gz | grep -E "CONFIG_HZ=|CONFIG_KSU|CONFIG_KPM|CONFIG_BBG"
+---
+
+### 2. Step-by-Step Fork & Setup Guide
+
+#### Step A: Fork & Prepare Your Device Branch
+1. **Fork** this repository to your GitHub account.
+2. Download the matching open-source kernel package for your exact model and firmware CSC/build from **[Samsung Open Source](https://opensource.samsung.com/)**.
+3. Create a dedicated branch following the repository's naming convention:
+   ```text
+   <MODEL>-<OneUI>-<KERNEL_VERSION>

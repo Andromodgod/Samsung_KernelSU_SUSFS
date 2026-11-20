@@ -192,13 +192,27 @@ jobs:
           rm -rf drivers/kernelsu KernelSU KernelSU-Next BakaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
-          KBUILD_FILE="$KERNEL_ROOT/BakaSU/kernel/Kbuild"
-          if [ -f "$KBUILD_FILE" ]; then
-            sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := $KERNEL_ROOT/BakaSU/kernel|g" "$KBUILD_FILE"
-            grep -q "KSU_SRC := $KERNEL_ROOT/BakaSU/kernel" "$KBUILD_FILE" || sed -i "1i KSU_SRC := $KERNEL_ROOT/BakaSU/kernel" "$KBUILD_FILE"
-            echo "Patched KSU_SRC in $KBUILD_FILE:"
-            grep -n "KSU_SRC" "$KBUILD_FILE" || true
+          # Materialize drivers/kernelsu symlink into a real directory for Bazel's sandbox
+          if [ -L "drivers/kernelsu" ]; then
+            TARGET=$(readlink -f "drivers/kernelsu")
+            rm -f "drivers/kernelsu"
+            cp -r "$TARGET" "drivers/kernelsu"
+            echo "Materialized drivers/kernelsu from $TARGET"
           fi
+
+          # Patch KSU_SRC and bypass the .git submodule check (Kbuild:71) inside Bazel sandbox
+          for KBUILD_FILE in \
+            "$KERNEL_ROOT/drivers/kernelsu/Kbuild" \
+            "$KERNEL_ROOT/KernelSU/kernel/Kbuild" \
+            "$KERNEL_ROOT/BakaSU/kernel/Kbuild"; do
+            if [ -f "$KBUILD_FILE" ]; then
+              sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$KBUILD_FILE"
+              grep -q "KSU_SRC :=" "$KBUILD_FILE" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$KBUILD_FILE"
+              sed -i '/You should use BakaSU as a git submodule/d' "$KBUILD_FILE"
+              echo "Patched KSU_SRC in $KBUILD_FILE:"
+              grep -n "KSU_SRC" "$KBUILD_FILE" || true
+            fi
+          done
 
       - name: Add SUSFS
         if: inputs.susfs == 'true'
@@ -269,14 +283,18 @@ jobs:
       - name: Change Kernel Name and clean dirty
         uses: ./.github/actions/kernel-name
 
-      - name: Set Custom Kernel Name (Haroon Kernel)
+      - name: Set Custom Kernel Name (Normie Kernel)
         run: |
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
 
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
-            echo 'CONFIG_LOCALVERSION="-Haroon-Kernel"' >> "$DEFCONFIG"
+            echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
+          fi
+
+          if [ -f "$KERNEL_ROOT/scripts/setlocalversion" ]; then
+            sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_ROOT/scripts/setlocalversion"
           fi
 
           rm -f "$KERNEL_ROOT"/localversion*
@@ -298,10 +316,21 @@ jobs:
          ttl: ${{ inputs.ttl }}
          unicodefix: ${{ inputs.unicodefix }}
 
-      - name: Rename KSUN to bakasu in Output Filename
+      - name: Set Normie-Kernel and bakasu in Output Filename
         run: |
           NEW_FILE_NAME="${FILE_NAME//KSUN/bakasu}"
           NEW_FILE_NAME="${NEW_FILE_NAME//ksun/bakasu}"
+          NEW_FILE_NAME="${NEW_FILE_NAME//Haroon-Kernel/Normie-Kernel}"
+          NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
+
+          if [[ "$NEW_FILE_NAME" != *"Normie-Kernel"* ]]; then
+            if [ -n "$ARTIFACT_BASE" ] && [[ "$NEW_FILE_NAME" == "$ARTIFACT_BASE"* ]]; then
+              NEW_FILE_NAME="${ARTIFACT_BASE}-Normie-Kernel${NEW_FILE_NAME#"$ARTIFACT_BASE"}"
+            else
+              NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel"
+            fi
+          fi
+
           echo "FILE_NAME=$NEW_FILE_NAME" >> $GITHUB_ENV
           echo "Output FILE_NAME set to: $NEW_FILE_NAME"
 
@@ -311,6 +340,20 @@ jobs:
 
       - name: configure LTO
         uses: ./.github/actions/lto
+
+      - name: Materialize Out-of-Tree Symlinks for Bazel Sandbox
+        run: |
+          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
+          if [ -d "$KERNEL_ROOT" ]; then
+            for link in drivers/kernelsu fs/nomount security/baseband-guard; do
+              if [ -L "$KERNEL_ROOT/$link" ]; then
+                TARGET=$(readlink -f "$KERNEL_ROOT/$link")
+                rm -f "$KERNEL_ROOT/$link"
+                cp -r "$TARGET" "$KERNEL_ROOT/$link"
+                echo "Materialized $link from $TARGET"
+              fi
+            done
+          fi
 
       - name: Build
         uses: ./.github/actions/build
@@ -341,7 +384,7 @@ jobs:
       - name: Set AnyKernel3 Banner Name
         run: |
           if [ -f "AnyKernel3/anykernel.sh" ]; then
-            sed -i 's/kernel\.string=.*/kernel.string=Haroon Kernel/g' AnyKernel3/anykernel.sh
+            sed -i 's/kernel\.string=.*/kernel.string=Normie Kernel/g' AnyKernel3/anykernel.sh
           fi
 
       - name: Upload AnyKernel3 Artifacts
@@ -388,11 +431,19 @@ jobs:
           echo "## Build Information" >> build_summary.md
           echo "- **Android Version**: ${ANDROID_VER}" >> build_summary.md
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
+          echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
           echo "- **BBG**: Installed" >> build_summary.md
           echo "" >> build_summary.md
 
+          BAKASU_DIR=""
           if [ -d "$KERNEL_ROOT/BakaSU" ]; then
-            cd "$KERNEL_ROOT/BakaSU"
+            BAKASU_DIR="$KERNEL_ROOT/BakaSU"
+          elif [ -d "$KERNEL_ROOT/KernelSU" ]; then
+            BAKASU_DIR="$KERNEL_ROOT/KernelSU"
+          fi
+
+          if [ -n "$BAKASU_DIR" ]; then
+            cd "$BAKASU_DIR"
             BAKASU_COMMIT=$(git rev-parse HEAD)
             BAKASU_URL="https://github.com/Baka-SU/BakaSU/commit/$BAKASU_COMMIT"
             echo "- **BakaSU**: [$BAKASU_COMMIT]($BAKASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"

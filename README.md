@@ -1,129 +1,91 @@
 <div align="center">
 
-# 🔥 Wild Kernels for Samsung
+# ⚡ Normie-Kernel for Samsung (GKI 2.0)
 
-[![KernelSU](https://img.shields.io/badge/KernelSU-Supported-green)](https://kernelsu.org/)
-[![SUSFS](https://img.shields.io/badge/SUSFS-Integrated-orange)](https://gitlab.com/simonpunk/susfs4ksu)
+[![Target](https://img.shields.io/badge/Target-SM--S928B%20(One%20UI%208)-blue?style=flat-square)](https://github.com/haroonjee99/Samsung_KernelSU_SUSFS)
+[![Kernel](https://img.shields.io/badge/Linux-6.1%20GKI%202.0-lightgrey?style=flat-square)](https://source.android.com/docs/core/architecture/kernel)
+[![BakaSU](https://img.shields.io/badge/Root-BakaSU-green?style=flat-square)](https://github.com/Baka-SU/BakaSU)
+[![SUSFS](https://img.shields.io/badge/SUSFS-v2.4.0%20Inline-orange?style=flat-square)](https://gitlab.com/simonpunk/susfs4ksu)
+[![LTO](https://img.shields.io/badge/Clang%20LTO-Full-red?style=flat-square)](https://llvm.org/)
+
+**Custom KMI-safe Android 14 (`6.1`) GKI kernel built with Bazel/Kleaf, featuring BakaSU, SuSFS v2.4.0 inline hooks, NoMount, Baseband-Guard, and low-latency scheduler/I/O tuning.**
 
 </div>
+
+---
+
 <div align="center">
-## ⚠️ Your warranty is no longer valid!
 
-I am **not responsible** for bricked devices, damaged hardware, or any issues that arise from using this kernel.
+## ⚠️ Disclaimer & Warranty Notice
 
-**Please** do thorough research and fully understand the features included in this kernel before flashing it!
+**Your warranty is no longer valid once you unlock the bootloader or flash custom kernels.**
 
-By flashing this kernel, **YOU** are choosing to make these modifications. If something goes wrong, **do not blame me**!
-
----
-
-### 🚨 Proceed at your own risk!
-
----
-
-## 🔧 Available Kernels
-
-| Kernel | Repository | Status |
-|--------|------------|--------|
-| 🏗️ **GKI** | [GKI_KernelSU_SUSFS](https://github.com/WildKernels/GKI_KernelSU_SUSFS) | ✅ Active |
-| 👑 **Sultan** | [Sultan_KernelSU_SUSFS](https://github.com/WildKernels/Sultan_KernelSU_SUSFS) | ✅ Active |
-| 📱 **OnePlus** | [OnePlus_KernelSU_SUSFS](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS) | ✅ Active |
-| 📱 **Samsung** | [Samsung_KernelSU_SUSFS](https://github.com/WildKernels/Samsung_KernelSU_SUSFS) | ✅ Active |
-
----
-
-## 🔗 Additional Resources
-
-- 🩹 [Kernel Patches](https://github.com/WildKernels/kernel_patches)
-- ⚡ [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher)
-
----
-
-## 📋 Installation Instructions
-
-For GKI installation, please follow the official guide:
-
-📖 **[KernelSU Installation Guide](https://kernelsu.org/guide/installation.html)**
-
----
-
-## ✨ Features
-
-- 🔐 **KernelSU**: A root solution for Android GKI devices that works in kernel mode and grants root permission to userspace applications directly in kernel space
-- 🛡️ **SUSFS**: An addon root hiding kernel patches and userspace module for KernelSU
-
----
-
-| 🔧 **Project** | 👨‍💻 **Developer** | 🔗 **Link** |
-|:---------------:|:----------------:|:-----------:|
-| **KernelSU** | tiann | [![GitHub](https://img.shields.io/badge/GitHub-tiann-blue?style=flat-square&logo=github)](https://github.com/tiann/KernelSU) |
-| **KernelSU-Next** | rifsxd | [![GitHub](https://img.shields.io/badge/GitHub-rifsxd-blue?style=flat-square&logo=github)](https://github.com/KernelSU-Next/KernelSU-Next) |
-| **Magic-KSU** | 5ec1cff | [![GitHub](https://img.shields.io/badge/GitHub-5ec1cff-blue?style=flat-square&logo=github)](https://github.com/5ec1cff/KernelSU) |
-| **SUSFS** | simonpunk | [![GitLab](https://img.shields.io/badge/GitLab-simonpunk-orange?style=flat-square&logo=gitlab)](https://gitlab.com/simonpunk/susfs4ksu.git) |
-| **SUSFS Module** | sidex15 | [![GitHub](https://img.shields.io/badge/GitHub-sidex15-blue?style=flat-square&logo=github)](https://github.com/sidex15) |
-| **Sultan Kernels** | kerneltoast | [![GitHub](https://img.shields.io/badge/GitHub-kerneltoast-blue?style=flat-square&logo=github)](https://github.com/kerneltoast) |
-
-🙏 Special thanks to the open-source community for their contributions!
-
----
-
-## 💬 Support
-
-If you encounter any issues or need help, feel free to:
-- 🐛 Open an issue in this repository
-- 💬 Reach out to me directly
-
----
-
-## ⚠️ Disclaimer
-
-Flashing this kernel will void your warranty, and there is always a risk of bricking your device. Please make sure to:
-- 💾 Back up your data
-- 🧠 Understand the risks before proceeding
+This software is provided for testing and educational purposes only. The maintainers are **not responsible** for bricked devices, tripped Knox (`0x1`), damaged hardware, or data loss. Back up your `boot.img` and critical data before flashing.
 
 **🚨 Proceed at your own risk!**
 
----
-
-<div align="center">
-
-## 📱 Connect With Us
-
-[![Telegram](https://img.shields.io/badge/Telegram-Jimsterino98-blue?logo=telegram)](https://t.me/Ngadhnjim98)
-[![Telegram Group](https://img.shields.io/badge/Telegram-Wild__Kernels-blue?logo=telegram)](https://t.me/WildKernelsTG)
-
 </div>
 
 ---
 
-## 🌟 Special Thanks
+## ✨ Key Features
 
-**These amazing people help make this project possible! ❤️**
+### 🔐 Root, Security & Stealth Hardening
+- **BakaSU (`CONFIG_KSU`):** Kernel-mode root solution supporting **KernelSU Official**, **KOWSU**, and **BakaSU** managers out of the box.
+- **SuSFS v2.4.0 (Inline Hooks):** Latest root-hiding subsystem using inline hooks (`setresuid`, `execveat`, `faccessat`, `sys_read`, `stat`, `vfs_fstat`, `sys_reboot`, `input_handle_event`) and `selinux_hide` manual hooks.
+- **NoMount:** Mountless namespace isolation for module overlays without leaving detectable mount table artifacts.
+- **Baseband-Guard (BBG):** Hardware-level baseband/partition write protection integrated into `CONFIG_LSM`.
+- **Kernel Patch Module (KPM) Support:** Dynamic runtime kernel patching support.
+- **Unicode Path Traversal Fix:** Blocks detection vectors relying on non-printable Unicode codepoints in paths.
+- **`/proc/config.gz` Stealth Masking:** Filters build-time `ikconfig` output so `CONFIG_KSU`, `CONFIG_KPM`, `CONFIG_BBG`, `CONFIG_TMPFS_XATTR`, `CONFIG_IP6_NF_NAT`, `CONFIG_WIREGUARD`, and `CONFIG_DEFAULT_BBR` report as `# ... is not set` while preserving a valid gzip stream.
 
-| Contributor | Contribution |
-|-------------|-------------|
-| 🛡️ [simonpunk](https://gitlab.com/simonpunk/susfs4ksu.git) | Created SUSFS! |
-| 📦 [sidex15](https://github.com/sidex15) | Created module! |
-| 🩹 [backslashxx](https://github.com/backslashxx) | Helped with patches! |
-| 🔧 [Teemo](https://github.com/liqideqq) | Helped with patches! |
-| 💝 [幕落](https://github.com/MuLuo688) | Donation! |
-| 🛡️ [vc-teahouse](https://github.com/vc-teahouse) | Created Baseband-guard (BBG)! |
+### 🚀 Compiler, Scheduler & Storage Optimizations (KMI-Safe)
+- **Full Clang LTO (`LTO=full`):** Cross-translation-unit link-time optimization enabled by default for improved IPC and smaller binary footprint without breaking vendor `.ko` KMI compatibility.
+- **300Hz Kernel Timer (`CONFIG_HZ_300=y`):** Aligns scheduler timer ticks evenly with `60Hz` / `120Hz` LTPO display refresh intervals for tighter touch and frame pacing.
+- **16ms PELT Half-Life:** Halves Per-Entity Load Tracking decay windows (`LOAD_AVG_PERIOD=16`) with recalculated decay tables so WALT/EAS ramps CPU frequencies twice as fast during UI and gaming bursts.
+- **MGLRU Enabled at Boot (`CONFIG_LRU_GEN_ENABLED=y`):** Multi-Gen LRU active immediately without userspace scripts, cutting `kswapd` overhead and improving background app retention.
+- **F2FS Zstd & LZ4/LZ4HC Compression:** Built-in `CONFIG_F2FS_FS_ZSTD` and `CONFIG_CRYPTO_ZSTD` for higher UFS 4.0 random-read throughput and reduced NAND write amplification.
 
-*If you have contributed and are not listed here, please remind me!* 🙏
+### 🎮 Gaming, Containers & USB Hardware
+- **NTSYNC (`CONFIG_NTSYNC`):** In-kernel Windows NT synchronization primitives for low-latency Wine / Winlator gaming.
+- **DroidSpaces Support:** Full Linux container and namespace isolation support ([Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS)).
+- **Built-in Gamepad & Controller Drivers (`=y`):** Native plug-and-play USB/Bluetooth support with force feedback and LEDs for **Xbox (`xpad`)**, **PlayStation DualSense / DualShock 4 (`hid-playstation`, `hid-sony`)**, **Nintendo Switch Pro / Joy-Con (`hid-nintendo`)**, **Steam Controller (`hid-steam`)**, and **Microsoft HID** controllers.
+- **USB Gadget HID & Mass Storage (`=y`):** Built-in `usb_f_hid` and `usb_f_mass_storage` for USB keyboard/mouse emulation and bootable `.iso` mounting over USB-C.
+
+### 🌐 Networking & Firewall Stack
+- **TCP BBRv3 (Default at Boot):** Active immediately via `CONFIG_DEFAULT_BBR=y` for higher throughput and lower latency on mobile and Wi-Fi links.
+- **FQ & CAKE Packet Schedulers:** `fq` enabled as default pacing qdisc (`CONFIG_DEFAULT_FQ=y`) alongside built-in `sch_cake` and `sch_pie` for bufferbloat control.
+- **Built-in WireGuard (`CONFIG_WIREGUARD=y`):** Zero module-loading overhead for VPN tunnels.
+- **IPv6 NAT, IP Set & TTL Target Support:** Full netfilter support for advanced firewall rules and packet TTL/HL modification.
 
 ---
-<div align="center">
-## 💝 Donations
 
-Any and all donations are appreciated!
+## ⚙️ Automated Bazel / Kleaf CI Pipeline
 
-PayPal: [paypal.me/NgadhnjimHoxha](paypal.me/NgadhnjimHoxha)
+This repository includes custom GitHub Actions automation (`.github/actions/build/action.yml` and `.github/workflows/main.yml`) tailored for Samsung's Bazel/Kleaf GKI 2.0 build system:
+- **Sandbox Materialization:** Converts out-of-tree symlinks (`drivers/kernelsu`, `fs/nomount`, `security/baseband-guard`) and UAPI headers into real files compatible with Bazel's `processwrapper-sandbox`.
+- **Automated `Kbuild` & `UTS_RELEASE` Patching:** Resolves host `.git` commit counts for `KSU_VERSION`, injects UAPI include paths for `preinit/runner.elf`, synchronizes Kconfig fragments across `common` and `msm-kernel`, and appends `-Normie-Kernel` to the kernel version string.
+- **Artifact Extraction:** Automatically extracts built `Image`, `Image.gz`, and `Image.lz4` binaries from `bazel-bin` into `AnyKernel3` flashable zips.
 
-Wise: [wise.com/pay/me/ngadhnjimh](wise.com/pay/me/ngadhnjimh)
+---
 
-Ko-fi: [https://ko-fi.com/jimsterino98](https://ko-fi.com/jimsterino98)
+## 📋 Installation & Post-Flash Verification
 
-Buy me a coffee: [buymeacoffee.com/jimsterino98](buymeacoffee.com/jimsterino98)
+### Flashing
+1. Download the latest `*-AnyKernel3.zip` from **GitHub Releases** (or GitHub Actions workflow artifacts).
+2. Flash the zip using a compatible kernel flasher such as **[KernelFlasher](https://github.com/fatalcoder524/KernelFlasher)** or **[Horizon Kernel Flasher](https://github.com/libxzr/HorizonKernelFlasher)**.
+3. Reboot and verify the active kernel version under **Settings → About phone → Software information → Kernel version** (`...-Normie-Kernel`).
 
-DM on telegram for crypto donations!
+### Quick `adb shell` Verification
+```bash
+# Confirm Normie-Kernel branding
+uname -r
 
+# Confirm BBR congestion control & FQ default qdisc
+sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+
+# Confirm MGLRU is active at boot (0x0007)
+cat /sys/kernel/mm/lru_gen/enabled
+
+# Confirm /proc/config.gz stealth masking and 300Hz timer
+zcat /proc/config.gz | grep -E "CONFIG_HZ=|CONFIG_KSU|CONFIG_KPM|CONFIG_BBG"

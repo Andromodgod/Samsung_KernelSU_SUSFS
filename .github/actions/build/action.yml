@@ -32,17 +32,61 @@ runs:
        fi
       done
 
-      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC and skips the .git submodule check
-      for kbuild in \
-       "$KERNEL_DIR/drivers/kernelsu/Kbuild" \
-       "$KERNEL_DIR/KernelSU/kernel/Kbuild" \
-       "$KERNEL_DIR/BakaSU/kernel/Kbuild"; do
-       if [ -f "$kbuild" ]; then
-        sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$kbuild"
-        grep -q "KSU_SRC :=" "$kbuild" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$kbuild"
-        sed -i '/You should use BakaSU as a git submodule/d' "$kbuild"
+      # 2. Patch BakaSU Kbuild so Bazel finds KSU_SRC, resolves KSU_VERSION, and skips the .git submodule error
+      KSU_REPO=""
+      for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
+       if [ -d "$repo/.git" ]; then
+        KSU_REPO="$repo"
+        break
        fi
       done
+      if [ -n "$KSU_REPO" ]; then
+       KSU_VER=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "12000")
+      else
+       KSU_VER="12000"
+      fi
+      echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
+
+      python3 -c '
+import pathlib, re, sys
+
+kernel_dir = pathlib.Path(sys.argv[1])
+ksu_ver = sys.argv[2]
+
+targets = [
+    kernel_dir / "drivers/kernelsu/Kbuild",
+    kernel_dir / "KernelSU/kernel/Kbuild",
+    kernel_dir / "BakaSU/kernel/Kbuild",
+]
+
+for kbuild in targets:
+    if not kbuild.is_file():
+        continue
+    text = kbuild.read_text(encoding="utf-8", errors="ignore")
+    text = re.sub(
+        r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
+        "KSU_SRC := $(srctree)/drivers/kernelsu",
+        text,
+        flags=re.MULTILINE,
+    )
+    if "KSU_SRC :=" not in text:
+        text = "KSU_SRC := $(srctree)/drivers/kernelsu\n" + text
+    text = re.sub(
+        r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
+        "$(warning",
+        text,
+    )
+    text = re.sub(
+        r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
+        f"KSU_VERSION := {ksu_ver}",
+        text,
+        flags=re.MULTILINE,
+    )
+    if "KSU_VERSION :=" not in text:
+        text = f"KSU_VERSION := {ksu_ver}\n" + text
+    kbuild.write_text(text, encoding="utf-8")
+    print(f"Patched {kbuild}")
+' "$KERNEL_DIR" "$KSU_VER"
 
       # 3. Enforce Normie-Kernel localversion
       DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"

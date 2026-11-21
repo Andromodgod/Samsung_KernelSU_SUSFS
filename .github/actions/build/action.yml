@@ -178,8 +178,10 @@ runs:
          "# CONFIG_HZ_1000 is not set",
          "CONFIG_HZ=100",
          "CONFIG_NO_HZ_IDLE=y",
-         # Battery, CPUIdle & Deep Sleep Optimizations (KMI-safe)
+         # Battery, CPUIdle, Lazy RCU & Deep Sleep Optimizations (KMI-safe)
          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
+         "CONFIG_RCU_NOCB_CPU=y",
+         "CONFIG_RCU_LAZY=y",
          "CONFIG_SUSPEND_SKIP_SYNC=y",
          "CONFIG_PM_AUTOSLEEP=y",
          "CONFIG_PM_WAKELOCKS=y",
@@ -187,10 +189,18 @@ runs:
          "CONFIG_CPU_IDLE_GOV_TEO=y",
          "CONFIG_ARM_PSCI_CPUIDLE=y",
          "CONFIG_ARM_PSCI_CPUIDLE_DOMAIN=y",
-         # MGLRU active at boot (reduces kswapd background reclaim overhead)
+         # MGLRU active at boot + THP madvise (reduces kswapd & khugepaged wakeups)
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",
          "# CONFIG_LRU_GEN_STATS is not set",
+         "CONFIG_TRANSPARENT_HUGEPAGE=y",
+         "# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set",
+         "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y",
+         # Strip non-ABI-locked debug overhead (keeps CONFIG_TRACING for Samsung vendor .ko compatibility)
+         "# CONFIG_SCHED_DEBUG is not set",
+         "# CONFIG_SLUB_DEBUG is not set",
+         "# CONFIG_DEBUG_FS is not set",
+         "# CONFIG_FTRACE is not set",
          # Zstd crypto & F2FS Zstd/LZ4 compression
          "CONFIG_CRYPTO_ZSTD=y",
          "CONFIG_F2FS_FS_COMPRESSION=y",
@@ -393,6 +403,55 @@ runs:
                  pelt_h.write_text(htxt, encoding="utf-8")
                  pelt_c.write_text(ctxt, encoding="utf-8")
                  print(f"Applied {halflife}ms PELT half-life in {root}")
+
+         # Lower default RT task uclamp_min (384) so audio/sensor SCHED_FIFO threads don't pin Cortex-X4 prime core
+         rt_c = root / "kernel/sched/rt.c"
+         if rt_c.is_file():
+             rtxt = rt_c.read_text(encoding="utf-8", errors="ignore")
+             rtxt_new, rcount = re.subn(
+                 r"(unsigned int sysctl_sched_uclamp_util_min_rt_default\s*=\s*)SCHED_CAPACITY_SCALE\s*;",
+                 r"\g<1>384;",
+                 rtxt,
+             )
+             if rcount > 0:
+                 rt_c.write_text(rtxt_new, encoding="utf-8")
+                 print(f"Lowered sysctl_sched_uclamp_util_min_rt_default to 384 in {rt_c}")
+
+         # Inject Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker)
+         wakeup_c = root / "drivers/base/power/wakeup.c"
+         if wakeup_c.is_file():
+             wtxt = wakeup_c.read_text(encoding="utf-8", errors="ignore")
+             if "boeffla_wakelock_blocker" not in wtxt and "static void wakeup_source_activate(" in wtxt and "wakeup_sources_debugfs_init(void)" in wtxt:
+                 wtxt = wtxt.replace(
+                     "#include <linux/debugfs.h>",
+                     "#include <linux/debugfs.h>\n#include <linux/miscdevice.h>\nstatic char list_wl[255] = {0};\nstatic bool wl_blocker_active = false;",
+                     1,
+                 )
+                 wtxt = re.sub(
+                     r"(static void wakeup_source_activate\(struct wakeup_source \*ws\)\s*\{\s*unsigned int cec;)",
+                     r"\1\n\tif (wl_blocker_active && ws && ws->name && strstr(list_wl, ws->name) != NULL) {\n\t\tws->active = false;\n\t\treturn;\n\t}",
+                     wtxt,
+                     count=1,
+                 )
+                 boeffla_sysfs = (
+                     "static ssize_t wakelock_blocker_show(struct device *dev, struct device_attribute *attr, char *buf)\n"
+                     "{\n\treturn sysfs_emit(buf, \"%s\\n\", list_wl);\n}\n\n"
+                     "static ssize_t wakelock_blocker_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)\n"
+                     "{\n\tsize_t len = min(count, sizeof(list_wl) - 1);\n\tmemcpy(list_wl, buf, len);\n\tlist_wl[len] = '\\0';\n\tstrim(list_wl);\n\twl_blocker_active = (strlen(list_wl) > 0);\n\treturn count;\n}\n\n"
+                     "static DEVICE_ATTR_RW(wakelock_blocker);\n"
+                     "static struct attribute *boeffla_wl_attrs[] = { &dev_attr_wakelock_blocker.attr, NULL };\n"
+                     "ATTRIBUTE_GROUPS(boeffla_wl);\n"
+                     "static struct miscdevice boeffla_wl_device = { .minor = MISC_DYNAMIC_MINOR, .name = \"boeffla_wakelock_blocker\", .groups = boeffla_wl_groups };\n\n"
+                     "static int __init wakeup_sources_debugfs_init(void)\n{\n\tmisc_register(&boeffla_wl_device);"
+                 )
+                 wtxt = re.sub(
+                     r"static int __init wakeup_sources_debugfs_init\(void\)\s*\{",
+                     boeffla_sysfs,
+                     wtxt,
+                     count=1,
+                 )
+                 wakeup_c.write_text(wtxt, encoding="utf-8")
+                 print(f"Injected boeffla_wakelock_blocker in {wakeup_c}")
 
          # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
          k_mk = root / "kernel/Makefile"

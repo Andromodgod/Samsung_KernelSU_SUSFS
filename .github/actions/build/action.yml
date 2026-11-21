@@ -196,11 +196,6 @@ runs:
          "CONFIG_TRANSPARENT_HUGEPAGE=y",
          "# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set",
          "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y",
-         # Strip non-ABI-locked debug overhead (keeps CONFIG_TRACING for Samsung vendor .ko compatibility)
-         "# CONFIG_SCHED_DEBUG is not set",
-         "# CONFIG_SLUB_DEBUG is not set",
-         "# CONFIG_DEBUG_FS is not set",
-         "# CONFIG_FTRACE is not set",
          # Zstd crypto & F2FS Zstd/LZ4 compression
          "CONFIG_CRYPTO_ZSTD=y",
          "CONFIG_F2FS_FS_COMPRESSION=y",

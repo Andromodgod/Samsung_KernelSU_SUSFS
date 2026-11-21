@@ -20,7 +20,7 @@ runs:
      cd "$CONFIG"
      echo "Building the kernel..."
 
-     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, optimizations, stealth, and Normie-Kernel branding)
+     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
      KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
      if [ -d "$KERNEL_DIR" ]; then
       # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
@@ -76,7 +76,7 @@ runs:
        done
       fi
 
-      # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I into runner.elf rules
+      # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I only into C compiler commands for runner
       python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
      import pathlib, re, sys
 
@@ -96,7 +96,7 @@ runs:
          text = kbuild.read_text(encoding="utf-8", errors="ignore")
 
          text = re.sub(
-             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
+             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|KernelSU|git submodule))",
              "$(warning",
              text,
          )
@@ -121,12 +121,13 @@ runs:
 
          patched_lines = []
          in_runner_rule = False
+         cc_pattern = re.compile(r"(\$\(CC\)|\$\(HOSTCC\)|\bclang\b|\bgcc\b)")
          for line in text.splitlines():
              stripped = line.strip()
              if not line.startswith("\t"):
                  if re.match(r"^(?:quiet_)?cmd_.*runner.*=", stripped):
-                     if "$(KSU_EXTRA_INC)" not in line:
-                         line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
+                     if "$(KSU_EXTRA_INC)" not in line and cc_pattern.search(line) and (".c" in line or " -c " in line):
+                         line = cc_pattern.sub(r"\1 $(KSU_EXTRA_INC)", line, count=1)
                      in_runner_rule = line.endswith("\\")
                  elif ":" in line and not stripped.startswith("#") and "=" not in line.split(":", 1)[0]:
                      target_part = line.split(":", 1)[0]
@@ -134,10 +135,8 @@ runs:
                  elif not line.endswith("\\"):
                      in_runner_rule = False
              elif in_runner_rule and "$(KSU_EXTRA_INC)" not in line:
-                 if re.search(r"(\$\(CC\)|\bclang\b|\bgcc\b)", line):
-                     line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
-                 elif " -o " in line:
-                     line = line.replace(" -o ", " $(KSU_EXTRA_INC) -o ", 1)
+                 if cc_pattern.search(line) and (".c" in line or " -c " in line):
+                     line = cc_pattern.sub(r"\1 $(KSU_EXTRA_INC)", line, count=1)
              patched_lines.append(line)
 
          footer = (
@@ -148,7 +147,7 @@ runs:
          print(f"Patched {kbuild}")
      PYEOF
 
-      # 4. Apply KMI-safe optimizations, battery tweaks, drivers, 24ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
+      # 4. Apply KMI-safe battery life optimizations, drivers, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
       EFFECTIVE_LTO="$BUILD_LTO"
       if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
        EFFECTIVE_LTO="full"
@@ -172,16 +171,23 @@ runs:
 
      base_config_lines = [
          'CONFIG_LOCALVERSION="-Normie-Kernel"',
-         # 250Hz low-overhead kernel timer (reduced interrupt wakeups for battery life)
-         "# CONFIG_HZ_100 is not set",
+         # 100Hz battery-optimized kernel timer + tickless idle (reduces periodic CPU wakeups)
+         "CONFIG_HZ_100=y",
+         "# CONFIG_HZ_250 is not set",
          "# CONFIG_HZ_300 is not set",
          "# CONFIG_HZ_1000 is not set",
-         "CONFIG_HZ_250=y",
-         "CONFIG_HZ=250",
-         # Battery & Deep Sleep Optimizations (KMI-safe)
+         "CONFIG_HZ=100",
+         "CONFIG_NO_HZ_IDLE=y",
+         # Battery, CPUIdle & Deep Sleep Optimizations (KMI-safe)
          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
          "CONFIG_SUSPEND_SKIP_SYNC=y",
-         # MGLRU active at boot
+         "CONFIG_PM_AUTOSLEEP=y",
+         "CONFIG_PM_WAKELOCKS=y",
+         "CONFIG_ENERGY_MODEL=y",
+         "CONFIG_CPU_IDLE_GOV_TEO=y",
+         "CONFIG_ARM_PSCI_CPUIDLE=y",
+         "CONFIG_ARM_PSCI_CPUIDLE_DOMAIN=y",
+         # MGLRU active at boot (reduces kswapd background reclaim overhead)
          "CONFIG_LRU_GEN=y",
          "CONFIG_LRU_GEN_ENABLED=y",
          "# CONFIG_LRU_GEN_STATS is not set",
@@ -208,7 +214,7 @@ runs:
          # USB Gadget HID & Mass Storage
          "CONFIG_USB_CONFIGFS_F_HID=y",
          "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-         # Default BBRv3 + FQ pacing (with built-in CAKE) + WireGuard
+         # Default BBRv3 + FQ pacing (faster transfer completion = faster modem race-to-idle) + WireGuard
          "CONFIG_TCP_CONG_ADVANCED=y",
          "# CONFIG_TCP_CONG_BIC is not set",
          "# CONFIG_TCP_CONG_WESTWOOD is not set",
@@ -239,6 +245,22 @@ runs:
              "# CONFIG_LTO_CLANG_FULL is not set",
              "CONFIG_LTO_CLANG_THIN=y",
          ]
+
+     susfs_candidate_syms = [
+         "KSU_SUSFS",
+         "KSU_SUSFS_SUS_PATH",
+         "KSU_SUSFS_SUS_MOUNT",
+         "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT",
+         "KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT",
+         "KSU_SUSFS_TRY_UMOUNT",
+         "KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT",
+         "KSU_SUSFS_SPOOF_UNAME",
+         "KSU_SUSFS_ENABLE_LOG",
+         "KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS",
+         "KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG",
+         "KSU_SUSFS_OPEN_REDIRECT",
+         "KSU_SUSFS_SUS_MAP",
+     ]
 
      extra_strip_keys = {
          "CONFIG_DEFAULT_CUBIC",
@@ -276,7 +298,8 @@ runs:
          "tcp_bbr.ko",
      )
 
-     halflife = 24
+     # 32ms stock PELT half-life prevents micro-burst background wakeups from boosting Cortex-X4 prime core
+     halflife = 32
      y = 0.5 ** (1.0 / halflife)
      inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
      sum_vals = []
@@ -299,6 +322,15 @@ runs:
      for root in roots:
          print(f"Configuring kernel tree: {root}")
          config_lines = list(base_config_lines)
+
+         # Only inject KSU and SUSFS symbols into kernel trees containing drivers/kernelsu/Kconfig (common, not msm-kernel)
+         ksu_kc = root / "drivers/kernelsu/Kconfig"
+         if ksu_kc.is_file():
+             ktxt = ksu_kc.read_text(encoding="utf-8", errors="ignore")
+             config_lines.append("CONFIG_KSU=y")
+             for sym in susfs_candidate_syms:
+                 if re.search(rf"^\s*config\s+{sym}\b", ktxt, flags=re.MULTILINE):
+                     config_lines.append(f"CONFIG_{sym}=y")
 
          zram_kc = root / "drivers/block/zram/Kconfig"
          if zram_kc.is_file():
@@ -353,8 +385,8 @@ runs:
          if pelt_h.is_file() and pelt_c.is_file():
              htxt = pelt_h.read_text(encoding="utf-8", errors="ignore")
              ctxt = pelt_c.read_text(encoding="utf-8", errors="ignore")
-             if "LOAD_AVG_PERIOD 32" in htxt and "runnable_avg_yN_inv[]" in ctxt:
-                 htxt = htxt.replace("#define LOAD_AVG_PERIOD 32", f"#define LOAD_AVG_PERIOD {halflife}")
+             if "LOAD_AVG_PERIOD" in htxt and "runnable_avg_yN_inv[]" in ctxt:
+                 htxt = re.sub(r"#define LOAD_AVG_PERIOD\s+\d+", f"#define LOAD_AVG_PERIOD {halflife}", htxt)
                  htxt = re.sub(r"#define LOAD_AVG_MAX\s+\d+", f"#define LOAD_AVG_MAX {load_avg_max}", htxt)
                  ctxt = re.sub(r"static const u32 runnable_avg_yN_inv\[\]\s*=\s*\{[^}]*\};", inv_block, ctxt, flags=re.DOTALL)
                  ctxt = re.sub(r"static const u32 runnable_avg_yN_sum\[\]\s*=\s*\{[^}]*\};", sum_block, ctxt, flags=re.DOTALL)

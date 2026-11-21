@@ -173,10 +173,11 @@ jobs:
           path: ./downloaded-artifacts
           pattern: '*-AnyKernel3'
 
-      - name: Package AnyKernel3 Release ZIPs
+      - name: Package Timestamped AnyKernel3 Release ZIPs
         run: |
           set -e
-          echo "=== Downloaded Artifacts Tree ==="
+          BUILD_STAMP=$(TZ="Asia/Kuwait" date +"%Y%m%d-%H%M")
+          echo "=== Downloaded Artifacts Tree (Stamp: $BUILD_STAMP) ==="
           find ./downloaded-artifacts -maxdepth 3 || true
 
           if [ -f "./downloaded-artifacts/anykernel.sh" ]; then
@@ -184,7 +185,7 @@ jobs:
             if [ -z "$ARTIFACT_NAME" ]; then
               ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-bakasu-AnyKernel3"
             fi
-            zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}.zip"
+            zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}-${BUILD_STAMP}.zip"
             echo "Packaging ./downloaded-artifacts -> $zip_out"
             (cd ./downloaded-artifacts && zip -r -9 "$zip_out" .)
           else
@@ -196,7 +197,7 @@ jobs:
 
             for dir in "${AK3_DIRS[@]}"; do
               artifact_name=$(basename "$dir")
-              zip_out="$GITHUB_WORKSPACE/${artifact_name}.zip"
+              zip_out="$GITHUB_WORKSPACE/${artifact_name}-${BUILD_STAMP}.zip"
               echo "Packaging $dir -> $zip_out"
               if [ -d "$dir/AnyKernel3" ] && [ -f "$dir/AnyKernel3/anykernel.sh" ]; then
                 (cd "$dir/AnyKernel3" && zip -r -9 "$zip_out" .)
@@ -206,7 +207,283 @@ jobs:
             done
           fi
 
-          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3.zip
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip
+
+      - name: Build Normie-WALT-Battery v1.8 Module ZIP
+        run: |
+          python3 - << 'PYEOF'
+          import os, pathlib, zipfile
+
+          workspace = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", "."))
+          mod_zip = workspace / "Normie-WALT-Battery-v1.8.zip"
+
+          files = {
+              "module.prop": (
+                  "id=normie_walt_battery\n"
+                  "name=Normie WALT Battery Tuner\n"
+                  "version=v1.8\n"
+                  "versionCode=9\n"
+                  "author=Andromodgod\n"
+                  "description=Screen-aware 4-cluster WALT, UFS, Adreno GPU, THP madvise, VM, and wakelock tuning with KernelSU action.sh Battery/Stock toggle for SM-S928B.\n"
+              ),
+              "customize.sh": (
+                  'ui_print "- Installing Normie WALT Battery Tuner v1.8"\n'
+                  'ui_print "- Target: Snapdragon 8 Gen 3 (SM-S928B / e3q)"\n'
+                  'set_perm "$MODPATH/service.sh" 0 0 0755\n'
+                  'set_perm "$MODPATH/action.sh" 0 0 0755\n'
+                  'ui_print "- Tip: Use the Action button in KernelSU Manager to toggle Battery/Stock profiles."\n'
+              ),
+              "action.sh": '''#!/system/bin/sh
+          export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
+          MODDIR=${0%/*}
+          CONF="$MODDIR/mode.conf"
+          LOG="$MODDIR/walt.log"
+
+          CUR_MODE="battery"
+          [ -r "$CONF" ] && read -r CUR_MODE < "$CONF"
+
+          if [ "$CUR_MODE" = "battery" ]; then
+              echo "stock" > "$CONF"
+              echo "$(date '+%H:%M:%S') [action.sh] Switched mode to STOCK" >> "$LOG"
+              echo "========================================="
+              echo " Normie WALT Tuner -> STOCK PROFILE"
+              echo " Restoring Samsung default WALT & GPU..."
+              echo "========================================="
+          else
+              echo "battery" > "$CONF"
+              echo "$(date '+%H:%M:%S') [action.sh] Switched mode to BATTERY" >> "$LOG"
+              echo "========================================="
+              echo " Normie WALT Tuner -> BATTERY PROFILE"
+              echo " Activating 4-cluster WALT & deep sleep..."
+              echo "========================================="
+          fi
+          ''',
+              "service.sh": '''#!/system/bin/sh
+          export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
+          MODDIR=${0%/*}
+          LOG="$MODDIR/walt.log"
+          CONF="$MODDIR/mode.conf"
+
+          until [ "$(getprop sys.boot_completed)" = "1" ]; do
+              sleep 2
+          done
+          sleep 15
+
+          [ -f "$CONF" ] || echo "battery" > "$CONF"
+          echo "$(date '+%H:%M:%S') service.sh v1.8 started (PID $$)" > "$LOG"
+
+          write_val() {
+              if [ -e "$1" ]; then
+                  chmod 644 "$1" 2>/dev/null
+                  printf '%s\\n' "$2" > "$1" 2>/dev/null
+              fi
+          }
+
+          pick_freq() {
+              [ -r "$1" ] || return 1
+              read -r f1 f2 f3 f4 f5 _ < "$1"
+              case "$2" in
+                  1) echo "$f1" ;;
+                  2) echo "${f2:-$f1}" ;;
+                  3) echo "${f3:-$f1}" ;;
+                  4) echo "${f4:-$f1}" ;;
+                  5) echo "${f5:-$f1}" ;;
+                  *) echo "$f1" ;;
+              esac
+          }
+
+          is_screen_on() {
+              BL="/sys/class/backlight/panel0-backlight/bl_power"
+              if [ -r "$BL" ]; then
+                  read -r state < "$BL"
+                  [ "$state" = "0" ] && return 0 || return 1
+              fi
+              case "$(dumpsys power 2>/dev/null | grep -m 1 'mWakefulness=')" in
+                  *Awake*) return 0 ;;
+                  *) return 1 ;;
+              esac
+          }
+
+          apply_system_battery_tweaks() {
+              for q in /sys/block/sd*/queue; do
+                  [ -d "$q" ] || continue
+                  write_val "$q/scheduler" "none"
+                  write_val "$q/iostats" "0"
+              done
+
+              # Enforce THP=madvise (prevents Samsung boot scripts from leaving [always] active)
+              write_val "/sys/kernel/mm/transparent_hugepage/enabled" "madvise"
+
+              write_val "/proc/sys/vm/page-cluster" "0"
+              write_val "/proc/sys/vm/swappiness" "100"
+              write_val "/proc/sys/kernel/sched_util_clamp_min_rt_default" "384"
+              write_val "/sys/class/kgsl/kgsl-3d0/idle_timer" "48"
+
+              WL_NODE="/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker"
+              [ -e "$WL_NODE" ] && write_val "$WL_NODE" "IPA_WS;qcom_rx_wakelock;wlan_rx_wake;hal_bluetooth_lock"
+          }
+
+          apply_stock_profile() {
+              for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+                  [ -d "$policy/walt" ] || continue
+                  write_val "$policy/walt/pl" "1"
+                  write_val "$policy/walt/up_rate_limit_us" "500"
+                  write_val "$policy/walt/down_rate_limit_us" "2000"
+                  write_val "$policy/walt/hispeed_load" "80"
+              done
+
+              WALT_PROC="/proc/sys/walt"
+              if [ -d "$WALT_PROC" ]; then
+                  write_val "$WALT_PROC/sched_downmigrate" "85 85 85"
+                  write_val "$WALT_PROC/sched_upmigrate" "95 95 95"
+                  write_val "$WALT_PROC/sched_group_downmigrate" "85"
+                  write_val "$WALT_PROC/sched_group_upmigrate" "100"
+              fi
+
+              write_val "/sys/kernel/mm/transparent_hugepage/enabled" "always"
+              write_val "/proc/sys/vm/page-cluster" "3"
+              write_val "/proc/sys/kernel/sched_util_clamp_min_rt_default" "1024"
+              write_val "/sys/class/kgsl/kgsl-3d0/idle_timer" "80"
+              WL_NODE="/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker"
+              [ -e "$WL_NODE" ] && write_val "$WL_NODE" ""
+          }
+
+          apply_screen_on_profile() {
+              for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+                  [ -d "$policy/walt" ] || continue
+                  p_name=${policy##*/}
+                  avail="$policy/scaling_available_frequencies"
+                  write_val "$policy/walt/pl" "0"
+
+                  case "$p_name" in
+                      policy0)
+                          write_val "$policy/walt/up_rate_limit_us" "1000"
+                          write_val "$policy/walt/down_rate_limit_us" "1000"
+                          write_val "$policy/walt/hispeed_load" "85"
+                          hispeed=$(pick_freq "$avail" 5)
+                          [ -n "$hispeed" ] && write_val "$policy/walt/hispeed_freq" "$hispeed"
+                          ;;
+                      policy2|policy5)
+                          write_val "$policy/walt/up_rate_limit_us" "2500"
+                          write_val "$policy/walt/down_rate_limit_us" "500"
+                          write_val "$policy/walt/hispeed_load" "90"
+                          hispeed=$(pick_freq "$avail" 4)
+                          [ -n "$hispeed" ] && write_val "$policy/walt/hispeed_freq" "$hispeed"
+                          ;;
+                      policy7)
+                          write_val "$policy/walt/up_rate_limit_us" "4000"
+                          write_val "$policy/walt/down_rate_limit_us" "500"
+                          write_val "$policy/walt/hispeed_load" "95"
+                          hispeed=$(pick_freq "$avail" 2)
+                          [ -n "$hispeed" ] && write_val "$policy/walt/hispeed_freq" "$hispeed"
+                          ;;
+                  esac
+              done
+
+              WALT_PROC="/proc/sys/walt"
+              if [ -d "$WALT_PROC" ]; then
+                  write_val "$WALT_PROC/sched_downmigrate" "70 78 86"
+                  write_val "$WALT_PROC/sched_upmigrate" "85 90 96"
+                  write_val "$WALT_PROC/sched_group_downmigrate" "80"
+                  write_val "$WALT_PROC/sched_group_upmigrate" "95"
+                  write_val "$WALT_PROC/sched_boost" "0"
+              fi
+              apply_system_battery_tweaks
+          }
+
+          apply_screen_off_profile() {
+              for policy in /sys/devices/system/cpu/cpufreq/policy*; do
+                  [ -d "$policy/walt" ] || continue
+                  p_name=${policy##*/}
+                  avail="$policy/scaling_available_frequencies"
+                  min_freq=$(pick_freq "$avail" 1)
+
+                  write_val "$policy/walt/pl" "0"
+                  [ -n "$min_freq" ] && write_val "$policy/walt/hispeed_freq" "$min_freq"
+
+                  case "$p_name" in
+                      policy0)
+                          write_val "$policy/walt/up_rate_limit_us" "2500"
+                          write_val "$policy/walt/down_rate_limit_us" "500"
+                          write_val "$policy/walt/hispeed_load" "95"
+                          ;;
+                      policy2|policy5)
+                          write_val "$policy/walt/up_rate_limit_us" "6000"
+                          write_val "$policy/walt/down_rate_limit_us" "500"
+                          write_val "$policy/walt/hispeed_load" "98"
+                          ;;
+                      policy7)
+                          write_val "$policy/walt/up_rate_limit_us" "10000"
+                          write_val "$policy/walt/down_rate_limit_us" "500"
+                          write_val "$policy/walt/hispeed_load" "99"
+                          ;;
+                  esac
+              done
+
+              WALT_PROC="/proc/sys/walt"
+              if [ -d "$WALT_PROC" ]; then
+                  write_val "$WALT_PROC/sched_upmigrate" "95 98 99"
+                  write_val "$WALT_PROC/sched_downmigrate" "85 90 94"
+                  write_val "$WALT_PROC/sched_group_upmigrate" "99"
+                  write_val "$WALT_PROC/sched_group_downmigrate" "88"
+                  write_val "$WALT_PROC/sched_boost" "0"
+              fi
+          }
+
+          LAST_STATE=""
+          while true; do
+              MODE="battery"
+              [ -r "$CONF" ] && read -r MODE < "$CONF"
+
+              read -r u1 u2 u3 _ < /proc/sys/walt/sched_upmigrate 2>/dev/null
+              CUR_UP="$u1 $u2 $u3"
+
+              if [ "$MODE" = "stock" ]; then
+                  if [ "$LAST_STATE" != "STOCK" ] || [ "$CUR_UP" != "95 95 95" ]; then
+                      apply_stock_profile
+                      if [ "$LAST_STATE" != "STOCK" ]; then
+                          echo "$(date '+%H:%M:%S') Applied STOCK profile" >> "$LOG"
+                          LAST_STATE="STOCK"
+                      fi
+                  fi
+                  sleep 10
+              else
+                  if is_screen_on; then
+                      if [ "$LAST_STATE" != "ON" ] || [ "$CUR_UP" != "85 90 96" ]; then
+                          apply_screen_on_profile
+                          if [ "$LAST_STATE" != "ON" ]; then
+                              echo "$(date '+%H:%M:%S') Switched to SCREEN_ON profile" >> "$LOG"
+                              LAST_STATE="ON"
+                          fi
+                      fi
+                      sleep 10
+                  else
+                      if [ "$LAST_STATE" != "OFF" ] || [ "$CUR_UP" != "95 98 99" ]; then
+                          apply_screen_off_profile
+                          if [ "$LAST_STATE" != "OFF" ]; then
+                              echo "$(date '+%H:%M:%S') Switched to SCREEN_OFF profile" >> "$LOG"
+                              LAST_STATE="OFF"
+                          fi
+                      fi
+                      sleep 25
+                  fi
+              fi
+          done
+          ''',
+          }
+
+          with zipfile.ZipFile(mod_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+              for name, raw in files.items():
+                  lines = [ln[10:] if ln.startswith("          ") else ln for ln in raw.splitlines()]
+                  content = ("\n".join(lines).lstrip("\n") + "\n").encode("utf-8")
+                  info = zipfile.ZipInfo(name)
+                  info.create_system = 3
+                  info.external_attr = (0o755 if name.endswith(".sh") else 0o644) << 16
+                  zf.writestr(info, content)
+
+          print(f"Generated module zip -> {mod_zip}")
+          PYEOF
+          ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.8.zip"
 
       - name: get commit hashes
         run: |
@@ -294,8 +571,10 @@ jobs:
 
           if [[ "${{ inputs.optimization }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Battery & Deep Sleep Optimizations - 100Hz tickless idle timer, TEO cpuidle governor, Power-Efficient Workqueues, Suspend Skip Sync, and 32ms PELT decay to prevent prime-core micro-boosts
-          -> Kernel Optimization - MGLRU active at boot, ZRAM Multi-Comp (Zstd), and F2FS Zstd/LZ4 compression
+          -> Battery & Deep Sleep Optimizations - 100Hz tickless idle timer, TEO cpuidle governor, Lazy RCU (RCU_LAZY active at boot), Power-Efficient Workqueues, Suspend Skip Sync, and 32ms PELT decay to prevent prime-core micro-boosts
+          -> Scheduler & Wakelock Control - Lowered RT Task UClamp (384) to keep audio/sensor threads off the Cortex-X4 prime core, plus kernel-side Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker)
+          -> Kernel Optimization - MGLRU active at boot, THP set to madvise (stops background khugepaged wakeups), ZRAM Multi-Comp (Zstd), and F2FS Zstd/LZ4 compression
+          -> Companion Module Attached - Normie-WALT-Battery-v1.8.zip included in release assets (screen-aware 4-cluster WALT tuning, UFS/GPU idle optimization, and automatic wakelock filtering)
           EOF
           fi
 
@@ -331,7 +610,9 @@ jobs:
         with:
           tag_name: ${{ env.NEW_TAG }}
           prerelease: ${{ inputs.release_type == 'Pre-Release' }}
-          files: "*-AnyKernel3.zip"
+          files: |
+            *-AnyKernel3-*.zip
+            Normie-WALT-Battery-v1.8.zip
           fail_on_unmatched_files: true
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md

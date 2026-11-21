@@ -129,6 +129,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RELEASE_NAME: "Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS"
       RELEASE_BODY: ""
+      NEW_TAG: ""
+      BAKASU_HASH: ""
+      SUSFS_61: ""
+      BBG_HASH: ""
+      NM_HASH: ""
     steps:
       - name: Free Disk Space
         if: true
@@ -167,6 +172,41 @@ jobs:
         with:
           path: ./downloaded-artifacts
           pattern: '*-AnyKernel3'
+
+      - name: Package AnyKernel3 Release ZIPs
+        run: |
+          set -e
+          echo "=== Downloaded Artifacts Tree ==="
+          find ./downloaded-artifacts -maxdepth 3 || true
+
+          if [ -f "./downloaded-artifacts/anykernel.sh" ]; then
+            ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '[.artifacts[] | select(.name | endswith("-AnyKernel3"))][0].name' 2>/dev/null || echo "")
+            if [ -z "$ARTIFACT_NAME" ]; then
+              ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-bakasu-AnyKernel3"
+            fi
+            zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}.zip"
+            echo "Packaging ./downloaded-artifacts -> $zip_out"
+            (cd ./downloaded-artifacts && zip -r -9 "$zip_out" .)
+          else
+            mapfile -t AK3_DIRS < <(find ./downloaded-artifacts -mindepth 1 -maxdepth 2 -type d -name '*-AnyKernel3')
+            if [ "${#AK3_DIRS[@]}" -eq 0 ]; then
+              echo "ERROR: No AnyKernel3 files or *-AnyKernel3 directories found under ./downloaded-artifacts!"
+              exit 1
+            fi
+
+            for dir in "${AK3_DIRS[@]}"; do
+              artifact_name=$(basename "$dir")
+              zip_out="$GITHUB_WORKSPACE/${artifact_name}.zip"
+              echo "Packaging $dir -> $zip_out"
+              if [ -d "$dir/AnyKernel3" ] && [ -f "$dir/AnyKernel3/anykernel.sh" ]; then
+                (cd "$dir/AnyKernel3" && zip -r -9 "$zip_out" .)
+              else
+                (cd "$dir" && zip -r -9 "$zip_out" .)
+              fi
+            done
+          fi
+
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3.zip
 
       - name: get commit hashes
         run: |
@@ -254,7 +294,8 @@ jobs:
 
           if [[ "${{ inputs.optimization }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Kernel Optimization - 300Hz display-aligned timer, 16ms PELT half-life, MGLRU active at boot, ZRAM Multi-Comp (Zstd), and F2FS Zstd compression
+          -> Battery & Deep Sleep Optimizations - 100Hz tickless idle timer, TEO cpuidle governor, Power-Efficient Workqueues, Suspend Skip Sync, and 32ms PELT decay to prevent prime-core micro-boosts
+          -> Kernel Optimization - MGLRU active at boot, ZRAM Multi-Comp (Zstd), and F2FS Zstd/LZ4 compression
           EOF
           fi
 
@@ -285,31 +326,12 @@ jobs:
           EOF
           fi
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release & Attach Assets
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.NEW_TAG }}
           prerelease: ${{ inputs.release_type == 'Pre-Release' }}
-          files: ""
+          files: "*-AnyKernel3.zip"
+          fail_on_unmatched_files: true
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md
-
-      - name: Upload Release Assets
-        run: |
-          shopt -s nullglob
-          anykernel_dirs=(./downloaded-artifacts/*/)
-          if [ ${#anykernel_dirs[@]} -eq 0 ]; then
-            echo "No artifact directories found under ./downloaded-artifacts; skipping upload."
-          else
-            for dir in "${anykernel_dirs[@]}"; do
-              if [[ "$(basename "$dir")" == *"-AnyKernel3" ]]; then
-                artifact_name=$(basename "$dir")
-                echo "Creating ZIP for $artifact_name..."
-                cd "$dir"
-                zip -r -9 "../../${artifact_name}.zip" ./*
-                cd - > /dev/null
-                echo "Uploading ${artifact_name}.zip..."
-                gh release upload ${{ env.NEW_TAG }} "${artifact_name}.zip"
-              fi
-            done
-          fi

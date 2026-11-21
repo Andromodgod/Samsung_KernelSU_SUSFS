@@ -441,7 +441,7 @@ runs:
                  )
                  wtxt = re.sub(
                      r"static int __init wakeup_sources_debugfs_init\(void\)\s*\{",
-                     boeffla_sysfs,
+                     lambda _: boeffla_sysfs,
                      wtxt,
                      count=1,
                  )

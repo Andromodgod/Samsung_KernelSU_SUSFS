@@ -127,7 +127,7 @@ jobs:
 
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_NAME: "Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS"
+      RELEASE_NAME: ""
       RELEASE_BODY: ""
       NEW_TAG: ""
       BAKASU_HASH: ""
@@ -183,7 +183,7 @@ jobs:
           if [ -f "./downloaded-artifacts/anykernel.sh" ]; then
             ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '[.artifacts[] | select(.name | endswith("-AnyKernel3"))][0].name' 2>/dev/null || echo "")
             if [ -z "$ARTIFACT_NAME" ]; then
-              ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-bakasu-AnyKernel3"
+              ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-AnyKernel3"
             fi
             zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}-${BUILD_STAMP}.zip"
             echo "Packaging ./downloaded-artifacts -> $zip_out"
@@ -209,60 +209,35 @@ jobs:
 
           ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip
 
-      - name: Build Normie-WALT-Battery v1.8 Module ZIP
+      - name: Build Normie-WALT-Battery v1.9 Module ZIP (with KernelSU WebUI)
         run: |
           python3 - << 'PYEOF'
           import os, pathlib, zipfile
 
           workspace = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", "."))
-          mod_zip = workspace / "Normie-WALT-Battery-v1.8.zip"
+          mod_zip = workspace / "Normie-WALT-Battery-v1.9.zip"
 
           files = {
               "module.prop": (
                   "id=normie_walt_battery\n"
                   "name=Normie WALT Battery Tuner\n"
-                  "version=v1.8\n"
-                  "versionCode=9\n"
+                  "version=v1.9\n"
+                  "versionCode=10\n"
                   "author=Andromodgod\n"
-                  "description=Screen-aware 4-cluster WALT, UFS, Adreno GPU, THP madvise, VM, and wakelock tuning with KernelSU action.sh Battery/Stock toggle for SM-S928B.\n"
+                  "description=Screen-aware 4-cluster WALT, UFS, Adreno GPU, THP madvise, VM, and wakelock tuning with interactive KernelSU WebUI for SM-S928B.\n"
               ),
               "customize.sh": (
-                  'ui_print "- Installing Normie WALT Battery Tuner v1.8"\n'
+                  'ui_print "- Installing Normie WALT Battery Tuner v1.9 (WebUI)"\n'
                   'ui_print "- Target: Snapdragon 8 Gen 3 (SM-S928B / e3q)"\n'
                   'set_perm "$MODPATH/service.sh" 0 0 0755\n'
-                  'set_perm "$MODPATH/action.sh" 0 0 0755\n'
-                  'ui_print "- Tip: Use the Action button in KernelSU Manager to toggle Battery/Stock profiles."\n'
+                  'ui_print "- Tip: Tap the WebUI button in KernelSU Manager to switch profiles & view live telemetry."\n'
               ),
-              "action.sh": '''#!/system/bin/sh
-          export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
-          MODDIR=${0%/*}
-          CONF="$MODDIR/mode.conf"
-          LOG="$MODDIR/walt.log"
-
-          CUR_MODE="battery"
-          [ -r "$CONF" ] && read -r CUR_MODE < "$CONF"
-
-          if [ "$CUR_MODE" = "battery" ]; then
-              echo "stock" > "$CONF"
-              echo "$(date '+%H:%M:%S') [action.sh] Switched mode to STOCK" >> "$LOG"
-              echo "========================================="
-              echo " Normie WALT Tuner -> STOCK PROFILE"
-              echo " Restoring Samsung default WALT & GPU..."
-              echo "========================================="
-          else
-              echo "battery" > "$CONF"
-              echo "$(date '+%H:%M:%S') [action.sh] Switched mode to BATTERY" >> "$LOG"
-              echo "========================================="
-              echo " Normie WALT Tuner -> BATTERY PROFILE"
-              echo " Activating 4-cluster WALT & deep sleep..."
-              echo "========================================="
-          fi
-          ''',
               "service.sh": '''#!/system/bin/sh
           export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
           MODDIR=${0%/*}
           LOG="$MODDIR/walt.log"
           CONF="$MODDIR/mode.conf"
+          TRIG="$MODDIR/.reload"
 
           until [ "$(getprop sys.boot_completed)" = "1" ]; do
               sleep 2
@@ -270,7 +245,7 @@ jobs:
           sleep 15
 
           [ -f "$CONF" ] || echo "battery" > "$CONF"
-          echo "$(date '+%H:%M:%S') service.sh v1.8 started (PID $$)" > "$LOG"
+          echo "$(date '+%H:%M:%S') service.sh v1.9 started (PID $$)" > "$LOG"
 
           write_val() {
               if [ -e "$1" ]; then
@@ -311,9 +286,7 @@ jobs:
                   write_val "$q/iostats" "0"
               done
 
-              # Enforce THP=madvise (prevents Samsung boot scripts from leaving [always] active)
               write_val "/sys/kernel/mm/transparent_hugepage/enabled" "madvise"
-
               write_val "/proc/sys/vm/page-cluster" "0"
               write_val "/proc/sys/vm/swappiness" "100"
               write_val "/proc/sys/kernel/sched_util_clamp_min_rt_default" "384"
@@ -430,6 +403,19 @@ jobs:
               fi
           }
 
+          smart_sleep() {
+              secs="$1"
+              i=0
+              while [ "$i" -lt "$secs" ]; do
+                  if [ -f "$TRIG" ]; then
+                      rm -f "$TRIG"
+                      return 0
+                  fi
+                  sleep 1
+                  i=$((i + 1))
+              done
+          }
+
           LAST_STATE=""
           while true; do
               MODE="battery"
@@ -446,7 +432,7 @@ jobs:
                           LAST_STATE="STOCK"
                       fi
                   fi
-                  sleep 10
+                  smart_sleep 10
               else
                   if is_screen_on; then
                       if [ "$LAST_STATE" != "ON" ] || [ "$CUR_UP" != "85 90 96" ]; then
@@ -456,7 +442,7 @@ jobs:
                               LAST_STATE="ON"
                           fi
                       fi
-                      sleep 10
+                      smart_sleep 10
                   else
                       if [ "$LAST_STATE" != "OFF" ] || [ "$CUR_UP" != "95 98 99" ]; then
                           apply_screen_off_profile
@@ -465,10 +451,283 @@ jobs:
                               LAST_STATE="OFF"
                           fi
                       fi
-                      sleep 25
+                      smart_sleep 25
                   fi
               fi
           done
+          ''',
+              "webroot/index.html": '''<!DOCTYPE html>
+          <html lang="en">
+          <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+          <title>Normie WALT Battery Tuner</title>
+          <style>
+            :root {
+              --bg: #0d1117;
+              --card: #161b22;
+              --border: #30363d;
+              --text: #e6edf3;
+              --muted: #8b949e;
+              --accent: #3fb950;
+              --accent-dim: rgba(63, 185, 80, 0.16);
+              --warn: #d29922;
+              --warn-dim: rgba(210, 153, 34, 0.16);
+            }
+            * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+            body {
+              margin: 0;
+              padding: 16px;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+              background: var(--bg);
+              color: var(--text);
+              line-height: 1.4;
+            }
+            .header {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 14px;
+            }
+            .title { font-size: 18px; font-weight: 700; }
+            .subtitle { font-size: 12px; color: var(--muted); }
+            .badge {
+              padding: 4px 10px;
+              border-radius: 999px;
+              font-size: 11px;
+              font-weight: 700;
+              letter-spacing: 0.4px;
+              background: var(--accent-dim);
+              color: var(--accent);
+              border: 1px solid rgba(63, 185, 80, 0.35);
+            }
+            .badge.stock {
+              background: var(--warn-dim);
+              color: var(--warn);
+              border-color: rgba(210, 153, 34, 0.35);
+            }
+            .card {
+              background: var(--card);
+              border: 1px solid var(--border);
+              border-radius: 14px;
+              padding: 14px;
+              margin-bottom: 12px;
+            }
+            .card-title {
+              font-size: 12px;
+              font-weight: 600;
+              text-transform: uppercase;
+              letter-spacing: 0.6px;
+              color: var(--muted);
+              margin-bottom: 10px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            .btn-row {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 10px;
+            }
+            button {
+              border: 1px solid var(--border);
+              background: #21262d;
+              color: var(--text);
+              padding: 12px 10px;
+              border-radius: 10px;
+              font-size: 14px;
+              font-weight: 600;
+              cursor: pointer;
+              transition: 0.15s ease;
+            }
+            button:active { transform: scale(0.98); }
+            button.active-bat {
+              background: var(--accent-dim);
+              border-color: var(--accent);
+              color: var(--accent);
+            }
+            button.active-stk {
+              background: var(--warn-dim);
+              border-color: var(--warn);
+              color: var(--warn);
+            }
+            .mini-btn {
+              padding: 4px 10px;
+              font-size: 11px;
+              border-radius: 7px;
+            }
+            .grid {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 8px;
+            }
+            .stat {
+              background: #0d1117;
+              border: 1px solid #21262d;
+              border-radius: 10px;
+              padding: 9px 10px;
+            }
+            .stat-label { font-size: 11px; color: var(--muted); }
+            .stat-val {
+              font-size: 13px;
+              font-weight: 600;
+              margin-top: 2px;
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              word-break: break-word;
+            }
+            .log-box {
+              background: #0d1117;
+              border: 1px solid #21262d;
+              border-radius: 10px;
+              padding: 10px;
+              font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size: 11px;
+              color: #c9d1d9;
+              max-height: 165px;
+              overflow-y: auto;
+              white-space: pre-wrap;
+            }
+          </style>
+          </head>
+          <body>
+            <div class="header">
+              <div>
+                <div class="title">Normie WALT Tuner</div>
+                <div class="subtitle" id="kver">SM-S928B • Loading kernel...</div>
+              </div>
+              <div class="badge" id="modeBadge">BATTERY</div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Power Profile</div>
+              <div class="btn-row">
+                <button id="btnBattery" onclick="setMode('battery')">Battery (4-Cluster)</button>
+                <button id="btnStock" onclick="setMode('stock')">Stock (Samsung)</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">
+                <span>Live Kernel Telemetry</span>
+                <button class="mini-btn" onclick="refreshAll()">Refresh</button>
+              </div>
+              <div class="grid">
+                <div class="stat">
+                  <div class="stat-label">WALT Upmigrate</div>
+                  <div class="stat-val" id="valWalt">--</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">THP Mode</div>
+                  <div class="stat-val" id="valThp">--</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">RT UClamp Min</div>
+                  <div class="stat-val" id="valUclamp">--</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">Adreno GPU Idle</div>
+                  <div class="stat-val" id="valGpu">--</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">UFS Scheduler</div>
+                  <div class="stat-val" id="valUfs">--</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">Wakelock Blocker</div>
+                  <div class="stat-val" id="valWl">--</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Service Log (walt.log)</div>
+              <div class="log-box" id="logBox">Reading log...</div>
+            </div>
+
+          <script>
+            const MOD = "/data/adb/modules/normie_walt_battery";
+            let cbSeq = 0;
+
+            function ksuExec(cmd) {
+              return new Promise((resolve) => {
+                if (!window.ksu || typeof window.ksu.exec !== "function") {
+                  resolve({ errno: -1, stdout: "", stderr: "ksu API unavailable" });
+                  return;
+                }
+                const cbName = "__ksu_cb_" + (++cbSeq);
+                window[cbName] = (errno, stdout, stderr) => {
+                  delete window[cbName];
+                  resolve({ errno, stdout: (stdout || "").trim(), stderr: (stderr || "").trim() });
+                };
+                try {
+                  window.ksu.exec(cmd, "{}", cbName);
+                } catch (e) {
+                  delete window[cbName];
+                  resolve({ errno: -1, stdout: "", stderr: String(e) });
+                }
+              });
+            }
+
+            function toast(msg) {
+              if (window.ksu && typeof window.ksu.toast === "function") {
+                try { window.ksu.toast(msg); } catch (_) {}
+              }
+            }
+
+            function renderMode(mode) {
+              const isStock = mode === "stock";
+              const badge = document.getElementById("modeBadge");
+              const btnBat = document.getElementById("btnBattery");
+              const btnStk = document.getElementById("btnStock");
+              badge.textContent = isStock ? "STOCK" : "BATTERY";
+              badge.className = isStock ? "badge stock" : "badge";
+              btnBat.className = isStock ? "" : "active-bat";
+              btnStk.className = isStock ? "active-stk" : "";
+            }
+
+            async function setMode(mode) {
+              const ts = new Date().toTimeString().split(" ")[0];
+              await ksuExec(
+                "printf '%s\\n' '" + mode + "' > " + MOD + "/mode.conf && " +
+                "echo '" + ts + " [WebUI] Switched mode to " + mode.toUpperCase() + "' >> " + MOD + "/walt.log && " +
+                "touch " + MOD + "/.reload"
+              );
+              renderMode(mode);
+              toast("Switched to " + mode.toUpperCase() + " profile");
+              setTimeout(refreshAll, 1300);
+            }
+
+            async function refreshAll() {
+              const [kver, mode, walt, thp, uclamp, gpu, ufs, wl, log] = await Promise.all([
+                ksuExec("uname -r"),
+                ksuExec("cat " + MOD + "/mode.conf 2>/dev/null || echo battery"),
+                ksuExec("cat /proc/sys/walt/sched_upmigrate 2>/dev/null || echo N/A"),
+                ksuExec("cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo N/A"),
+                ksuExec("cat /proc/sys/kernel/sched_util_clamp_min_rt_default 2>/dev/null || echo N/A"),
+                ksuExec("cat /sys/class/kgsl/kgsl-3d0/idle_timer 2>/dev/null || echo N/A"),
+                ksuExec("cat /sys/block/sda/queue/scheduler 2>/dev/null || echo N/A"),
+                ksuExec("cat /sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker 2>/dev/null || echo N/A"),
+                ksuExec("tail -n 12 " + MOD + "/walt.log 2>/dev/null || echo 'No log entries yet'")
+              ]);
+
+              if (kver.stdout) document.getElementById("kver").textContent = kver.stdout;
+              renderMode(mode.stdout === "stock" ? "stock" : "battery");
+
+              document.getElementById("valWalt").textContent = (walt.stdout || "N/A").replace(/\\s+/g, " ");
+              const thpMatch = (thp.stdout || "").match(/\\[([^\\]]+)\\]/);
+              document.getElementById("valThp").textContent = thpMatch ? thpMatch[1] : (thp.stdout || "N/A");
+              document.getElementById("valUclamp").textContent = uclamp.stdout || "N/A";
+              document.getElementById("valGpu").textContent = gpu.stdout ? gpu.stdout + " ms" : "N/A";
+              const ufsMatch = (ufs.stdout || "").match(/\\[([^\\]]+)\\]/);
+              document.getElementById("valUfs").textContent = ufsMatch ? ufsMatch[1] : (ufs.stdout || "N/A");
+              document.getElementById("valWl").textContent = wl.stdout ? wl.stdout.split(";").length + " blocked" : "0 (Stock)";
+              document.getElementById("logBox").textContent = log.stdout || "No log entries yet";
+            }
+
+            refreshAll();
+          </script>
+          </body>
+          </html>
           ''',
           }
 
@@ -483,17 +742,31 @@ jobs:
 
           print(f"Generated module zip -> {mod_zip}")
           PYEOF
-          ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.8.zip"
+          ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.9.zip"
 
       - name: get commit hashes
         run: |
-         echo "SUSFS_61=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | cut -f1)" >> $GITHUB_ENV
-         echo "BAKASU_HASH=$(git ls-remote https://github.com/Baka-SU/BakaSU.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
-         echo "BBG_HASH=$(git ls-remote https://github.com/vc-teahouse/Baseband-guard.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
-         echo "NM_HASH=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/master | cut -f1)" >> $GITHUB_ENV
+         if [[ "${{ inputs.susfs }}" == "true" ]]; then
+           echo "SUSFS_61=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | cut -f1)" >> $GITHUB_ENV
+         fi
+         if [[ "${{ inputs.ksun }}" == "true" ]]; then
+           echo "BAKASU_HASH=$(git ls-remote https://github.com/Baka-SU/BakaSU.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
+         fi
+         if [[ "${{ inputs.bbg }}" == "true" ]]; then
+           echo "BBG_HASH=$(git ls-remote https://github.com/vc-teahouse/Baseband-guard.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
+         fi
+         if [[ "${{ inputs.nomount }}" == "true" ]]; then
+           echo "NM_HASH=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/master | cut -f1)" >> $GITHUB_ENV
+         fi
 
-      - name: Set release body
+      - name: Set dynamic release title and body
         run: |
+          if [[ "${{ inputs.ksun }}" == "true" ]]; then
+            echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS" >> $GITHUB_ENV
+          else
+            echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel (Clean / Bring-Your-Own-Root)" >> $GITHUB_ENV
+          fi
+
           cat << 'EOF' > release_body.md
           **IMPORTANT DISCLAIMER**
           This software is provided for testing and educational purposes only. Use at your own risk.
@@ -507,6 +780,10 @@ jobs:
           if [[ "${{ inputs.ksun }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
           -> BakaSU - https://github.com/Baka-SU/BakaSU
+          EOF
+          else
+          cat <<'EOF' >> release_body.md
+          -> Clean Root-Agnostic Build - No built-in root manager included (compatible with Magisk, APatch, or Official KernelSU LKM)
           EOF
           fi
 
@@ -575,12 +852,24 @@ jobs:
           -> Battery & Deep Sleep Optimizations - 100Hz tickless idle timer, TEO cpuidle governor, Lazy RCU (RCU_LAZY active at boot), Power-Efficient Workqueues, Suspend Skip Sync, and 32ms PELT decay to prevent prime-core micro-boosts
           -> Scheduler & Wakelock Control - Lowered RT Task UClamp (384) to keep audio/sensor threads off the Cortex-X4 prime core, plus kernel-side Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker)
           -> Kernel Optimization - MGLRU active at boot, THP set to madvise (stops background khugepaged wakeups), ZRAM Multi-Comp (Zstd), and F2FS Zstd/LZ4 compression
-          -> Companion Module Attached - Normie-WALT-Battery-v1.8.zip included in release assets (screen-aware 4-cluster WALT tuning, UFS/GPU idle optimization, and automatic wakelock filtering)
+          -> Companion Module Attached - Normie-WALT-Battery-v1.9.zip included in release assets (KernelSU WebUI with live telemetry, Battery/Stock toggle, screen-aware 4-cluster WALT tuning, and wakelock filtering)
           EOF
           fi
 
           echo "-> Built using LTO: ${{ inputs.lto }}" >> release_body.md
 
+          if [[ "${{ inputs.ksun }}" != "true" ]]; then
+          cat <<'EOF' >> release_body.md
+
+          Installation (Bring Your Own Root):
+          1. Back up your current stock boot.img.
+          2. Flash the Normie-Kernel AnyKernel3 zip matching your One UI version (Oneui8, Oneui8.5, or Oneui9) first.
+          3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
+          4. Once rooted, install Normie-WALT-Battery-v1.9.zip in your root manager and reboot.
+          EOF
+          fi
+
+          if [[ "${{ inputs.ksun }}" == "true" || "${{ inputs.susfs }}" == "true" || "${{ inputs.bbg }}" == "true" || "${{ inputs.nomount }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
 
           Commit Hashes:
@@ -605,6 +894,7 @@ jobs:
           NoMount: ${{ env.NM_HASH }}
           EOF
           fi
+          fi
 
       - name: Create GitHub Release & Attach Assets
         uses: softprops/action-gh-release@v3
@@ -613,7 +903,7 @@ jobs:
           prerelease: ${{ inputs.release_type == 'Pre-Release' }}
           files: |
             *-AnyKernel3-*.zip
-            Normie-WALT-Battery-v1.8.zip
+            Normie-WALT-Battery-v1.9.zip
           fail_on_unmatched_files: true
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md

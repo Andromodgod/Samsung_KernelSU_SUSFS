@@ -21,25 +21,12 @@ runs:
         git fetch https://gitlab.com/pershoot/susfs4ksu.git gki-android14-6.1-dev
         git log ..FETCH_HEAD --oneline -n 2 | awk '{print $1}' | tac | xargs git cherry-pick
 
-        #cd susfs4ksu
-        #if [[ "$ANDROID_VER-$KERNEL_VER" == "android12-5.10" ]]; then
-          #COMMIT=ce2c2b2dea28c89d33f61af898cc18a93bf65ae9
-        #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android13-5.15" ]]; then
-         # COMMIT=529919fbc9f8aee6ee70eb3a8890ef33af0a109c
-        #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android14-6.1" ]]; then
-          #COMMIT=d1327b62e0854603cfc26e2226e0a993ec9b0656
-        #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android15-6.6" ]]; then
-          #COMMIT=676d202ed2cc322a2f90bcb2b56bc4f6a864acb8
-        #fi
-        #git checkout "$COMMIT"
-
         SUSFS4KSU="$ROOT/susfs4ksu"
         echo "SUSFS4KSU=$SUSFS4KSU" >> $GITHUB_ENV
 
     - name: Copy required files
       shell: bash
       run: |
-        # Apply SUSFS to kernel
         cd "$COMMON"
         cp "$SUSFS4KSU/kernel_patches/fs/"* ./fs/
         cp "$SUSFS4KSU/kernel_patches/include/linux/"* ./include/linux/
@@ -49,7 +36,6 @@ runs:
       shell: bash
       run: |
         cd "$COMMON"
-        #Prepare open.c for susfs patching
         sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/open.c
 
     - name: prepare namei.c for susfs patch
@@ -57,11 +43,8 @@ runs:
       shell: bash
       run: |
         cd "$COMMON"
-        #Prepare namei.c for susfs patching
-        # Delete security defex blocks
         sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/namei.c
 
-        # 2. Cleanup command: Find the empty while loop body and replace it with a semicolon
         sed -i '/while (!(error = link_path_walk/,/^[[:space:]]*}[[:space:]]*$/{
         s/) {$/)/
         /^[[:space:]]*}[[:space:]]*$/c\
@@ -72,18 +55,15 @@ runs:
       shell: bash
       run: |
         cd "$COMMON"
-        #fake patch trace/hooks/blk.h for susfs patching for kernel 6.1 and 5.15
         if [[ $KERNEL_VER == 6.1 || $KERNEL_VER == 5.15 ]]; then
           sed -i '/#include "internal.h"/a #include <trace/hooks/blk.h>' fs/namespace.c
         fi
 
-        #move fslog.h for susfs patch for LOS
         if [[ $BRANCH == *LOS* ]]; then
          sed -i '/#include <linux\/fslog.h>/d; /#include <linux\/security.h>/a #include <linux/fslog.h>' fs/namespace.c
          sed -i '/#include <linux\/cn_proc.h>/d; /#include <linux\/slab.h>/a #include <linux/cn_proc.h>' fs/proc/base.c
         fi
 
-        #remove kdp_ns section for susfs patch
         sed -i '/copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;/,/#endif/ {
          /#ifdef CONFIG_KDP_NS/,/#endif/ {
             /#else/,/#endif/!d
@@ -96,7 +76,6 @@ runs:
       shell: bash
       run: |
         cd "$COMMON"
-        # Apply SUSFS core patch
         patch -p1 < 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch || true
         rm -rf 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch
 
@@ -107,7 +86,6 @@ runs:
          echo "Patches found, applying..."
          cp "${patches[@]}" ./
 
-         # Fix SUSFS rejects
           for p in *.patch; do
             patch -p1 < "$p"
             rm -f "$p"
@@ -138,104 +116,115 @@ runs:
         def has_substr(haystack: str, needle: str) -> bool:
             return needle in haystack
 
+        def line_start_offset(text: str, pos: int) -> int:
+            nl = text.rfind("\n", 0, pos)
+            return 0 if nl == -1 else nl + 1
+
+        def find_fn_block(text: str, fn_name: str) -> tuple[int, int] | None:
+            m = re.search(rf"^static\s+ssize_t\s+{re.escape(fn_name)}\b", text, re.MULTILINE)
+            if not m:
+                return None
+            start = m.start()
+            nxt = re.search(r"^static\s+\w+", text[m.end():], re.MULTILINE)
+            end = m.end() + nxt.start() if nxt else len(text)
+            return start, end
+
         def insert_before_regex(path_str: str, pattern: str, block: str, label: str) -> None:
             p = Path(path_str)
+            if not p.exists():
+                print(f"[warn] {path_str} missing, skipping {label}")
+                return
             src = p.read_text(encoding="utf-8", errors="ignore")
             if block.strip() in src:
                 print(f"[skip] {label} already present in {path_str}")
                 return
             m = re.search(pattern, src, re.MULTILINE)
             if not m:
-                raise RuntimeError(f"Pattern not found in {path_str} for {label}")
-            idx = m.start()
+                print(f"[warn] Pattern not found in {path_str} for {label}, skipping")
+                return
+            idx = line_start_offset(src, m.start())
             p.write_text(src[:idx] + block + src[idx:], encoding="utf-8", newline="\n")
             print(f"[ok] Applied {label} to {path_str}")
 
         selinuxfs_path = Path("security/selinux/selinuxfs.c")
-        selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
+        if selinuxfs_path.exists():
+            selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
 
-        ctx_fn = re.search(r"^static ssize_t sel_write_context\b", selinuxfs, re.MULTILINE)
-        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
-        if not ctx_fn or not acc_fn:
-            raise RuntimeError("Could not locate sel_write_context or sel_write_access")
+            # 1. sel_write_context
+            span_ctx = find_fn_block(selinuxfs, "sel_write_context")
+            if span_ctx:
+                ctx_section = selinuxfs[span_ctx[0]:span_ctx[1]]
+                m1 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", ctx_section)
+                b1 = (
+                    "#ifdef CONFIG_KSU_SUSFS\n"
+                    "\tif (current_uid().val >= 10000 &&\n"
+                    "\t    (strstr(page, \":ksu\") || strstr(page, \":lsposed\"))) {\n"
+                    "\t\tlength = -EINVAL;\n"
+                    "\t\tgoto out;\n"
+                    "\t}\n"
+                    "#endif\n"
+                )
+                if has_substr(selinuxfs, b1.strip()):
+                    print("[skip] sel_write_context hide already present")
+                elif m1:
+                    abs1 = line_start_offset(selinuxfs, span_ctx[0] + m1.start())
+                    selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
+                    print("[ok] Applied sel_write_context hide")
+                else:
+                    print("[warn] Anchor not found in sel_write_context, skipping")
+            else:
+                print("[warn] sel_write_context not found, skipping")
 
-        ctx_section = selinuxfs[ctx_fn.start():acc_fn.start()]
-        m1 = re.search(
-            r"^[ \t]*[^\n;=]*=\s*security_context_to_sid\([\s\S]*?\bpage\b[\s\S]*?\);",
-            ctx_section,
-            re.MULTILINE,
-        )
-        if not m1:
-            raise RuntimeError("Anchor not found in sel_write_context")
-        b1 = (
-            "#ifdef CONFIG_KSU_SUSFS\n"
-            "\tif (current_uid().val >= 10000 &&\n"
-            "\t    (strstr(page, \":ksu\") || strstr(page, \":lsposed\"))) {\n"
-            "\t\tlength = -EINVAL;\n"
-            "\t\tgoto out;\n"
-            "\t}\n"
-            "#endif\n"
-        )
-        if not has_substr(selinuxfs, b1.strip()):
-            abs1 = ctx_fn.start() + m1.start()
-            selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
-            print("[ok] Applied sel_write_context hide")
-        else:
-            print("[skip] sel_write_context hide already present")
+            # 2 & 3. sel_write_access
+            span_acc = find_fn_block(selinuxfs, "sel_write_access")
+            if span_acc:
+                acc_section = selinuxfs[span_acc[0]:span_acc[1]]
+                m2 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", acc_section)
+                b2 = (
+                    "#ifdef CONFIG_KSU_SUSFS\n"
+                    "\tif (current_uid().val >= 10000 &&\n"
+                    "\t    (strstr(scon, \":ksu\") || strstr(tcon, \":ksu\") ||\n"
+                    "\t     strstr(scon, \":lsposed\") || strstr(tcon, \":lsposed\"))) {\n"
+                    "\t\tlength = -EINVAL;\n"
+                    "\t\tgoto out;\n"
+                    "\t}\n"
+                    "#endif\n"
+                )
+                if has_substr(selinuxfs, b2.strip()):
+                    print("[skip] sel_write_access context hide already present")
+                elif m2:
+                    abs2 = line_start_offset(selinuxfs, span_acc[0] + m2.start())
+                    selinuxfs = selinuxfs[:abs2] + b2 + selinuxfs[abs2:]
+                    print("[ok] Applied sel_write_access context hide")
+                else:
+                    print("[warn] SID lookup anchor not found in sel_write_access, skipping")
 
-        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
-        acc_section = selinuxfs[acc_fn.start():]
-        m2 = re.search(
-            r"^[ \t]*[^\n;]*security_context_to_sid\(",
-            acc_section,
-            re.MULTILINE,
-        )
-        if not m2:
-            raise RuntimeError("Anchor not found for scon lookup in sel_write_access")
-        b2 = (
-            "#ifdef CONFIG_KSU_SUSFS\n"
-            "\tif (current_uid().val >= 10000 &&\n"
-            "\t    (strstr(scon, \":ksu\") || strstr(tcon, \":ksu\") ||\n"
-            "\t     strstr(scon, \":lsposed\") || strstr(tcon, \":lsposed\"))) {\n"
-            "\t\tlength = -EINVAL;\n"
-            "\t\tgoto out;\n"
-            "\t}\n"
-            "#endif\n"
-        )
-        if not has_substr(selinuxfs, b2.strip()):
-            abs2 = acc_fn.start() + m2.start()
-            selinuxfs = selinuxfs[:abs2] + b2 + selinuxfs[abs2:]
-            print("[ok] Applied sel_write_access context hide")
-        else:
-            print("[skip] sel_write_access context hide already present")
+                span_acc = find_fn_block(selinuxfs, "sel_write_access")
+                acc_section = selinuxfs[span_acc[0]:span_acc[1]]
+                m3 = re.search(r"\bscnprintf\s*\(\s*buf\b", acc_section)
+                b3 = (
+                    "#ifdef CONFIG_KSU_SUSFS\n"
+                    "\tif (current_uid().val >= 10000 &&\n"
+                    "\t    strcmp(scon, \"u:r:system_server:s0\") == 0 &&\n"
+                    "\t    strcmp(tcon, \"u:r:system_server:s0\") == 0) {\n"
+                    "\t\tavd.allowed &= ~PROCESS__EXECMEM;\n"
+                    "\t}\n"
+                    "#endif\n"
+                )
+                if has_substr(selinuxfs, b3.strip()):
+                    print("[skip] sel_write_access execmem mask already present")
+                elif m3:
+                    abs3 = line_start_offset(selinuxfs, span_acc[0] + m3.start())
+                    selinuxfs = selinuxfs[:abs3] + b3 + selinuxfs[abs3:]
+                    print("[ok] Applied sel_write_access execmem mask")
+                else:
+                    print("[warn] scnprintf anchor not found in sel_write_access, skipping")
+            else:
+                print("[warn] sel_write_access not found, skipping")
 
-        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
-        acc_section = selinuxfs[acc_fn.start():]
-        m3 = re.search(
-            r"^[ \t]*[^\n;]*scnprintf\(\s*buf\s*,\s*SIMPLE_TRANSACTION_LIMIT\b",
-            acc_section,
-            re.MULTILINE,
-        )
-        if not m3:
-            raise RuntimeError("Anchor not found for scnprintf in sel_write_access")
-        b3 = (
-            "#ifdef CONFIG_KSU_SUSFS\n"
-            "\tif (current_uid().val >= 10000 &&\n"
-            "\t    strcmp(scon, \"u:r:system_server:s0\") == 0 &&\n"
-            "\t    strcmp(tcon, \"u:r:system_server:s0\") == 0) {\n"
-            "\t\tavd.allowed &= ~PROCESS__EXECMEM;\n"
-            "\t}\n"
-            "#endif\n"
-        )
-        if not has_substr(selinuxfs, b3.strip()):
-            abs3 = acc_fn.start() + m3.start()
-            selinuxfs = selinuxfs[:abs3] + b3 + selinuxfs[abs3:]
-            print("[ok] Applied sel_write_access execmem mask")
-        else:
-            print("[skip] sel_write_access execmem mask already present")
+            selinuxfs_path.write_text(selinuxfs, encoding="utf-8", newline="\n")
 
-        selinuxfs_path.write_text(selinuxfs, encoding="utf-8", newline="\n")
-
+        # 4. selinux_setprocattr
         b4 = (
             "#ifdef CONFIG_KSU_SUSFS\n"
             "\tif (current_uid().val >= 10000 && value && size >= 4) {\n"
@@ -253,7 +242,7 @@ runs:
         )
         insert_before_regex(
             "security/selinux/hooks.c",
-            r"^[ \t]*/\* Obtain a SID for the context, if one was specified\. \*/",
+            r"Obtain a SID for the context, if one was specified\.",
             b4,
             "selinux_setprocattr hide",
         )

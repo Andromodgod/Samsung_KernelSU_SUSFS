@@ -260,15 +260,15 @@ jobs:
 
       - name: Clean BakaSU Kconfig & Bypass check_defconfig
         run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
+          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
           DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
 
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            if [ "${{ inputs.bakasu }}" == "true" ]; then
+            if [[ "${{ inputs.bakasu }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-              if [ "${{ inputs.susfs }}" == "true" ]; then
+              if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
             fi
@@ -282,22 +282,6 @@ jobs:
 
       - name: Change Kernel Name and clean dirty
         uses: ./.github/actions/kernel-name
-
-      - name: Set Custom Kernel Name (Normie Kernel)
-        run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
-          DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
-
-          if [ -f "$DEFCONFIG" ]; then
-            sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
-            echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
-          fi
-
-          if [ -f "$KERNEL_ROOT/scripts/setlocalversion" ]; then
-            sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_ROOT/scripts/setlocalversion"
-          fi
-
-          rm -f "$KERNEL_ROOT"/localversion*
 
       - name: remove protected exports
         uses: ./.github/actions/abi-export
@@ -338,20 +322,6 @@ jobs:
 
       - name: configure LTO
         uses: ./.github/actions/lto
-
-      - name: Materialize Out-of-Tree Symlinks for Bazel Sandbox
-        run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
-          if [ -d "$KERNEL_ROOT" ]; then
-            for link in drivers/kernelsu fs/nomount security/baseband-guard; do
-              if [ -L "$KERNEL_ROOT/$link" ]; then
-                TARGET=$(readlink -f "$KERNEL_ROOT/$link")
-                rm -f "$KERNEL_ROOT/$link"
-                cp -r "$TARGET" "$KERNEL_ROOT/$link"
-                echo "Materialized $link from $TARGET"
-              fi
-            done
-          fi
 
       - name: Build
         uses: ./.github/actions/build
@@ -424,6 +394,7 @@ jobs:
       - name: Generate Build Summary
         if: ${{ always() }}
         run: |
+          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
           echo "# Kernel Build Summary" > build_summary.md
           echo "## ${{ env.FILE_NAME }}" >> build_summary.md
           echo "## Build Information" >> build_summary.md

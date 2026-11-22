@@ -186,7 +186,7 @@ runs:
         acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
         acc_section = selinuxfs[acc_fn.start():]
         m2 = re.search(
-            r"^[ \t]*[^\n;=]*=\s*security_context_to_sid\([\s\S]*?\bscon\b[\s\S]*?\);",
+            r"^[ \t]*[^\n;]*security_context_to_sid\(",
             acc_section,
             re.MULTILINE,
         )
@@ -197,6 +197,7 @@ runs:
             "\tif (current_uid().val >= 10000 &&\n"
             "\t    (strstr(scon, \":ksu\") || strstr(tcon, \":ksu\") ||\n"
             "\t     strstr(scon, \":lsposed\") || strstr(tcon, \":lsposed\"))) {\n"
+            "\t\tlength = -EINVAL;\n"
             "\t\tgoto out;\n"
             "\t}\n"
             "#endif\n"

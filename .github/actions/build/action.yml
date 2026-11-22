@@ -432,16 +432,9 @@ runs:
          if wakeup_c.is_file():
              wtxt = wakeup_c.read_text(encoding="utf-8", errors="ignore")
              if "boeffla_wakelock_blocker" not in wtxt and "wakeup_source_activate(" in wtxt:
-                 wtxt = (
-                     "#include <linux/init.h>\n"
-                     "#include <linux/miscdevice.h>\n"
-                     "static char list_wl[255] = {0};\n"
-                     "static bool wl_blocker_active = false;\n"
-                     + wtxt
-                 )
                  wtxt = re.sub(
                      r"(static void wakeup_source_activate\(struct wakeup_source \*ws\)\s*\{)",
-                     r"\1\n\tif (wl_blocker_active && ws && ws->name && strstr(list_wl, ws->name) != NULL) {\n\t\tws->active = false;\n\t\treturn;\n\t}",
+                     r"#include <linux/init.h>\n#include <linux/miscdevice.h>\nstatic char list_wl[255] = {0};\nstatic bool wl_blocker_active = false;\n\1\n\tif (wl_blocker_active && ws && ws->name && strstr(list_wl, ws->name) != NULL) {\n\t\tws->active = false;\n\t\treturn;\n\t}",
                      wtxt,
                      count=1,
                  )

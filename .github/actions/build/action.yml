@@ -182,6 +182,7 @@ runs:
          "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
          "CONFIG_RCU_NOCB_CPU=y",
          "CONFIG_RCU_LAZY=y",
+         "# CONFIG_RCU_LAZY_DEFAULT_OFF is not set",
          "CONFIG_SUSPEND_SKIP_SYNC=y",
          "CONFIG_PM_AUTOSLEEP=y",
          "CONFIG_PM_WAKELOCKS=y",
@@ -412,24 +413,40 @@ runs:
                  rt_c.write_text(rtxt_new, encoding="utf-8")
                  print(f"Lowered sysctl_sched_uclamp_util_min_rt_default to 384 in {rt_c}")
 
-         # Inject Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker)
+         # Force RCU_LAZY_DEFAULT_OFF default to n in Kconfig so Lazy RCU is active at boot
+         rcu_kc = root / "kernel/rcu/Kconfig"
+         if rcu_kc.is_file():
+             rktxt = rcu_kc.read_text(encoding="utf-8", errors="ignore")
+             rktxt_new = re.sub(
+                 r"(config RCU_LAZY_DEFAULT_OFF\b[\s\S]*?\bdefault\s+)y\b",
+                 r"\1n",
+                 rktxt,
+                 count=1,
+             )
+             if rktxt_new != rktxt:
+                 rcu_kc.write_text(rktxt_new, encoding="utf-8")
+                 print(f"Set RCU_LAZY_DEFAULT_OFF default to n in {rcu_kc}")
+
+         # Inject Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker) via late_initcall
          wakeup_c = root / "drivers/base/power/wakeup.c"
          if wakeup_c.is_file():
              wtxt = wakeup_c.read_text(encoding="utf-8", errors="ignore")
-             if "boeffla_wakelock_blocker" not in wtxt and "static void wakeup_source_activate(" in wtxt and "wakeup_sources_debugfs_init(void)" in wtxt:
-                 wtxt = wtxt.replace(
-                     "#include <linux/debugfs.h>",
-                     "#include <linux/debugfs.h>\n#include <linux/miscdevice.h>\nstatic char list_wl[255] = {0};\nstatic bool wl_blocker_active = false;",
-                     1,
+             if "boeffla_wakelock_blocker" not in wtxt and "wakeup_source_activate(" in wtxt:
+                 wtxt = (
+                     "#include <linux/init.h>\n"
+                     "#include <linux/miscdevice.h>\n"
+                     "static char list_wl[255] = {0};\n"
+                     "static bool wl_blocker_active = false;\n"
+                     + wtxt
                  )
                  wtxt = re.sub(
-                     r"(static void wakeup_source_activate\(struct wakeup_source \*ws\)\s*\{\s*unsigned int cec;)",
+                     r"(static void wakeup_source_activate\(struct wakeup_source \*ws\)\s*\{)",
                      r"\1\n\tif (wl_blocker_active && ws && ws->name && strstr(list_wl, ws->name) != NULL) {\n\t\tws->active = false;\n\t\treturn;\n\t}",
                      wtxt,
                      count=1,
                  )
                  boeffla_sysfs = (
-                     "static ssize_t wakelock_blocker_show(struct device *dev, struct device_attribute *attr, char *buf)\n"
+                     "\nstatic ssize_t wakelock_blocker_show(struct device *dev, struct device_attribute *attr, char *buf)\n"
                      "{\n\treturn sysfs_emit(buf, \"%s\\n\", list_wl);\n}\n\n"
                      "static ssize_t wakelock_blocker_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)\n"
                      "{\n\tsize_t len = min(count, sizeof(list_wl) - 1);\n\tmemcpy(list_wl, buf, len);\n\tlist_wl[len] = '\\0';\n\tstrim(list_wl);\n\twl_blocker_active = (strlen(list_wl) > 0);\n\treturn count;\n}\n\n"
@@ -437,14 +454,10 @@ runs:
                      "static struct attribute *boeffla_wl_attrs[] = { &dev_attr_wakelock_blocker.attr, NULL };\n"
                      "ATTRIBUTE_GROUPS(boeffla_wl);\n"
                      "static struct miscdevice boeffla_wl_device = { .minor = MISC_DYNAMIC_MINOR, .name = \"boeffla_wakelock_blocker\", .groups = boeffla_wl_groups };\n\n"
-                     "static int __init wakeup_sources_debugfs_init(void)\n{\n\tmisc_register(&boeffla_wl_device);"
+                     "static int __init boeffla_wl_init(void)\n{\n\treturn misc_register(&boeffla_wl_device);\n}\n"
+                     "late_initcall(boeffla_wl_init);\n"
                  )
-                 wtxt = re.sub(
-                     r"static int __init wakeup_sources_debugfs_init\(void\)\s*\{",
-                     lambda _: boeffla_sysfs,
-                     wtxt,
-                     count=1,
-                 )
+                 wtxt = wtxt + boeffla_sysfs
                  wakeup_c.write_text(wtxt, encoding="utf-8")
                  print(f"Injected boeffla_wakelock_blocker in {wakeup_c}")
 

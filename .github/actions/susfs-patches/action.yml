@@ -141,33 +141,41 @@ runs:
         if selinuxfs_path.exists():
             selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
 
-            # 1. sel_write_context
-            m_ctx = re.search(r"\bsel_write_context\b", selinuxfs)
+            # 1. sel_write_context (match function definition, not forward declaration)
+            m_ctx = re.search(r"^static\s+ssize_t\s+sel_write_context\b", selinuxfs, re.MULTILINE)
             if m_ctx:
                 ctx_section = selinuxfs[m_ctx.start():m_ctx.start() + 6000]
                 m1 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", ctx_section)
-                b1 = (
-                    "#ifdef CONFIG_KSU_SUSFS\n"
-                    "\tif (current_uid().val >= 10000 &&\n"
-                    "\t    (strstr(page, \":ksu\") || strstr(page, \":lsposed\"))) {\n"
-                    "\t\tlength = -EINVAL;\n"
-                    "\t\tgoto out;\n"
-                    "\t}\n"
-                    "#endif\n"
-                )
-                if has_substr(selinuxfs, b1.strip()):
-                    print("[skip] sel_write_context hide already present")
-                elif m1:
-                    abs1 = line_start_offset(selinuxfs, m_ctx.start() + m1.start())
-                    selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
-                    print("[ok] Applied sel_write_context hide")
+                if m1:
+                    call_snippet = ctx_section[m1.start():m1.start() + 160]
+                    buf_match = re.search(r"\b(page|data|buf|con|str)\b", call_snippet)
+                    ctx_var = buf_match.group(1) if buf_match else None
                 else:
-                    print("[warn] Anchor not found in sel_write_context, skipping")
-            else:
-                print("[warn] sel_write_context not found, skipping")
+                    ctx_var = None
 
-            # 2. sel_write_access context hide
-            m_acc = re.search(r"\bsel_write_access\b", selinuxfs)
+                if ctx_var:
+                    b1 = (
+                        "#ifdef CONFIG_KSU_SUSFS\n"
+                        f"\tif (current_uid().val >= 10000 &&\n"
+                        f"\t    (strstr({ctx_var}, \":ksu\") || strstr({ctx_var}, \":lsposed\"))) {{\n"
+                        "\t\tlength = -EINVAL;\n"
+                        "\t\tgoto out;\n"
+                        "\t}\n"
+                        "#endif\n"
+                    )
+                    if has_substr(selinuxfs, "strstr(") and "sel_write_context" in selinuxfs[m_ctx.start():m_ctx.start() + 6200]:
+                        print("[skip] sel_write_context hide already present")
+                    else:
+                        abs1 = line_start_offset(selinuxfs, m_ctx.start() + m1.start())
+                        selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
+                        print(f"[ok] Applied sel_write_context hide using '{ctx_var}'")
+                else:
+                    print("[warn] Could not resolve buffer variable in sel_write_context, skipping")
+            else:
+                print("[warn] sel_write_context definition not found, skipping")
+
+            # 2. sel_write_access context hide (match function definition)
+            m_acc = re.search(r"^static\s+ssize_t\s+sel_write_access\b", selinuxfs, re.MULTILINE)
             if m_acc:
                 acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
                 m2 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", acc_section)
@@ -191,7 +199,7 @@ runs:
                     print("[warn] SID lookup anchor not found in sel_write_access, skipping")
 
                 # 3. sel_write_access execmem mask
-                m_acc = re.search(r"\bsel_write_access\b", selinuxfs)
+                m_acc = re.search(r"^static\s+ssize_t\s+sel_write_access\b", selinuxfs, re.MULTILINE)
                 acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
                 m3 = re.search(r"\bscnprintf\s*\(\s*buf\b", acc_section)
                 b3 = (
@@ -212,7 +220,7 @@ runs:
                 else:
                     print("[warn] scnprintf anchor not found in sel_write_access, skipping")
             else:
-                print("[warn] sel_write_access not found, skipping")
+                print("[warn] sel_write_access definition not found, skipping")
 
             selinuxfs_path.write_text(selinuxfs, encoding="utf-8", newline="\n")
 

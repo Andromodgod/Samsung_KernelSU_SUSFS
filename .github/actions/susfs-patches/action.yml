@@ -117,19 +117,11 @@ runs:
           echo "No patch file found, skipping"
         fi
 
-        # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
-        # only exists on GKI branches that carry Google's page-size-migration
-        # feature (added to each android version's kernel/common branch at a
-        # different, sometime later, os_patch_level). Older os_patch_levels in
-        # our build matrix predate it, so fall back to a no-padding definition
-        # when the real header/macro isn't present. This is version-agnostic and
-        # a no-op wherever the real header already provides it.
         if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
           sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
           echo "Added VMA_PAD_START fallback definition to fs/proc/task_mmu.c"
         fi
 
-        # Same story for __fold_filemap_fixup_entry(), declared in page_size_compat.h.
         if grep -q '__fold_filemap_fixup_entry' fs/proc/task_mmu.c && ! grep -q '#include <linux/page_size_compat.h>' fs/proc/task_mmu.c; then
           sed -i '/#include <linux\/pkeys.h>/a #include <linux/page_size_compat.h>' fs/proc/task_mmu.c
           echo "Added page_size_compat.h include to fs/proc/task_mmu.c"
@@ -140,77 +132,128 @@ runs:
       run: |
         cd "$COMMON"
         python3 - << 'PYEOF'
+        import re
         from pathlib import Path
 
-        def insert_once(path_str: str, anchor: str, block: str, label: str) -> None:
+        def has_substr(haystack: str, needle: str) -> bool:
+            return needle in haystack
+
+        def insert_before_regex(path_str: str, pattern: str, block: str, label: str) -> None:
             p = Path(path_str)
             src = p.read_text(encoding="utf-8", errors="ignore")
             if block.strip() in src:
                 print(f"[skip] {label} already present in {path_str}")
                 return
-            idx = src.find(anchor)
-            if idx == -1:
-                raise RuntimeError(f"Anchor not found in {path_str} for {label}")
+            m = re.search(pattern, src, re.MULTILINE)
+            if not m:
+                raise RuntimeError(f"Pattern not found in {path_str} for {label}")
+            idx = m.start()
             p.write_text(src[:idx] + block + src[idx:], encoding="utf-8", newline="\n")
             print(f"[ok] Applied {label} to {path_str}")
 
-        # 1. sel_write_context: return -EINVAL for unprivileged UIDs querying :ksu or :lsposed
-        insert_once(
-            "security/selinux/selinuxfs.c",
-            "\tlength = security_context_to_sid(fsi->state, page, count, &sid,",
-            """#ifdef CONFIG_KSU_SUSFS
-        \tif (current_uid().val >= 10000 &&
-        \t    (strstr(page, ":ksu") || strstr(page, ":lsposed"))) {
-        \t\tlength = -EINVAL;
-        \t\tgoto out;
-        \t}
-        #endif
-        """,
-            "sel_write_context hide",
-        )
+        selinuxfs_path = Path("security/selinux/selinuxfs.c")
+        selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
 
-        # 2. sel_write_access: reject :ksu / :lsposed contexts for unprivileged UIDs
-        insert_once(
-            "security/selinux/selinuxfs.c",
-            "\tlength = security_context_to_sid(fsi->state, scon, strlen(scon) + 1,",
-            """#ifdef CONFIG_KSU_SUSFS
-        \tif (current_uid().val >= 10000 &&
-        \t    (strstr(scon, ":ksu") || strstr(tcon, ":ksu") ||
-        \t     strstr(scon, ":lsposed") || strstr(tcon, ":lsposed"))) {
-        \t\tgoto out;
-        \t}
-        #endif
-        """,
-            "sel_write_access context hide",
-        )
+        ctx_fn = re.search(r"^static ssize_t sel_write_context\b", selinuxfs, re.MULTILINE)
+        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
+        if not ctx_fn or not acc_fn:
+            raise RuntimeError("Could not locate sel_write_context or sel_write_access")
 
-        # 3. sel_write_access: mask PROCESS__EXECMEM on system_server self-query for app UIDs
-        insert_once(
-            "security/selinux/selinuxfs.c",
-            "\tlength = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT,",
-            """#ifdef CONFIG_KSU_SUSFS
-        \tif (current_uid().val >= 10000 &&
-        \t    strcmp(scon, "u:r:system_server:s0") == 0 &&
-        \t    strcmp(tcon, "u:r:system_server:s0") == 0) {
-        \t\tavd.allowed &= ~PROCESS__EXECMEM;
-        \t}
-        #endif
-        """,
-            "sel_write_access execmem mask",
+        ctx_section = selinuxfs[ctx_fn.start():acc_fn.start()]
+        m1 = re.search(
+            r"^[ \t]*[^\n;=]*=\s*security_context_to_sid\([\s\S]*?\bpage\b[\s\S]*?\);",
+            ctx_section,
+            re.MULTILINE,
         )
+        if not m1:
+            raise RuntimeError("Anchor not found in sel_write_context")
+        b1 = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            "\tif (current_uid().val >= 10000 &&\n"
+            "\t    (strstr(page, \":ksu\") || strstr(page, \":lsposed\"))) {\n"
+            "\t\tlength = -EINVAL;\n"
+            "\t\tgoto out;\n"
+            "\t}\n"
+            "#endif\n"
+        )
+        if not has_substr(selinuxfs, b1.strip()):
+            abs1 = ctx_fn.start() + m1.start()
+            selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
+            print("[ok] Applied sel_write_context hide")
+        else:
+            print("[skip] sel_write_context hide already present")
 
-        # 4. selinux_setprocattr: reject :ksu / :lsposed on /proc/self/attr/current for app UIDs
-        insert_once(
+        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
+        acc_section = selinuxfs[acc_fn.start():]
+        m2 = re.search(
+            r"^[ \t]*[^\n;=]*=\s*security_context_to_sid\([\s\S]*?\bscon\b[\s\S]*?\);",
+            acc_section,
+            re.MULTILINE,
+        )
+        if not m2:
+            raise RuntimeError("Anchor not found for scon lookup in sel_write_access")
+        b2 = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            "\tif (current_uid().val >= 10000 &&\n"
+            "\t    (strstr(scon, \":ksu\") || strstr(tcon, \":ksu\") ||\n"
+            "\t     strstr(scon, \":lsposed\") || strstr(tcon, \":lsposed\"))) {\n"
+            "\t\tgoto out;\n"
+            "\t}\n"
+            "#endif\n"
+        )
+        if not has_substr(selinuxfs, b2.strip()):
+            abs2 = acc_fn.start() + m2.start()
+            selinuxfs = selinuxfs[:abs2] + b2 + selinuxfs[abs2:]
+            print("[ok] Applied sel_write_access context hide")
+        else:
+            print("[skip] sel_write_access context hide already present")
+
+        acc_fn = re.search(r"^static ssize_t sel_write_access\b", selinuxfs, re.MULTILINE)
+        acc_section = selinuxfs[acc_fn.start():]
+        m3 = re.search(
+            r"^[ \t]*[^\n;]*scnprintf\(\s*buf\s*,\s*SIMPLE_TRANSACTION_LIMIT\b",
+            acc_section,
+            re.MULTILINE,
+        )
+        if not m3:
+            raise RuntimeError("Anchor not found for scnprintf in sel_write_access")
+        b3 = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            "\tif (current_uid().val >= 10000 &&\n"
+            "\t    strcmp(scon, \"u:r:system_server:s0\") == 0 &&\n"
+            "\t    strcmp(tcon, \"u:r:system_server:s0\") == 0) {\n"
+            "\t\tavd.allowed &= ~PROCESS__EXECMEM;\n"
+            "\t}\n"
+            "#endif\n"
+        )
+        if not has_substr(selinuxfs, b3.strip()):
+            abs3 = acc_fn.start() + m3.start()
+            selinuxfs = selinuxfs[:abs3] + b3 + selinuxfs[abs3:]
+            print("[ok] Applied sel_write_access execmem mask")
+        else:
+            print("[skip] sel_write_access execmem mask already present")
+
+        selinuxfs_path.write_text(selinuxfs, encoding="utf-8", newline="\n")
+
+        b4 = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            "\tif (current_uid().val >= 10000 && value && size >= 4) {\n"
+            "\t\tconst char *v = (const char *)value;\n"
+            "\t\tsize_t i;\n"
+            "\t\tfor (i = 0; i + 3 < size; i++) {\n"
+            "\t\t\tif ((v[i] == ':' && v[i+1] == 'k' && v[i+2] == 's' && v[i+3] == 'u') ||\n"
+            "\t\t\t    (i + 7 < size && v[i] == ':' && v[i+1] == 'l' && v[i+2] == 's' &&\n"
+            "\t\t\t     v[i+3] == 'p' && v[i+4] == 'o' && v[i+5] == 's' && v[i+6] == 'e' && v[i+7] == 'd')) {\n"
+            "\t\t\t\treturn -EINVAL;\n"
+            "\t\t\t}\n"
+            "\t\t}\n"
+            "\t}\n"
+            "#endif\n"
+        )
+        insert_before_regex(
             "security/selinux/hooks.c",
-            "\t/* Obtain a SID for the context, if one was specified. */",
-            """#ifdef CONFIG_KSU_SUSFS
-        \tif (current_uid().val >= 10000 && value &&
-        \t    (strnstr(value, ":ksu", size) ||
-        \t     strnstr(value, ":lsposed", size))) {
-        \t\treturn -EINVAL;
-        \t}
-        #endif
-        """,
+            r"^[ \t]*/\* Obtain a SID for the context, if one was specified\. \*/",
+            b4,
             "selinux_setprocattr hide",
         )
         PYEOF

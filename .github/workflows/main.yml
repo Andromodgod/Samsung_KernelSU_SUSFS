@@ -17,6 +17,23 @@ on:
           - Release
         default: Actions
 
+      oneui_targets:
+        description: "Select One UI Kernel(s) to Build"
+        required: true
+        type: choice
+        options:
+          - all
+          - SM-S928B-Oneui9
+          - SM-S928B-Oneui8.5
+          - SM-S928B-Oneui8
+        default: all
+
+      build_normie_battery:
+        description: "Build & Include Normie-WALT-Battery v1.9 ZIP (with WebUI)"
+        required: false
+        type: boolean
+        default: true
+
       lto:
         description: "Choose LTO build"
         required: true
@@ -100,11 +117,11 @@ on:
         type: boolean
 
 jobs:
-
   build-samsung:
     uses: ./.github/workflows/kernel-samsung.yml
     secrets: inherit
     with:
+      oneui_targets: ${{ inputs.oneui_targets }}
       susfs: ${{ inputs.susfs }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
@@ -119,96 +136,10 @@ jobs:
       ttl: ${{ inputs.ttl }}
       lto: ${{ inputs.lto }}
 
-  release:
+  build-normie-battery:
     runs-on: ubuntu-latest
-    if: inputs.release_type != 'Actions'
-    needs:
-      - build-samsung
-
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_NAME: ""
-      RELEASE_BODY: ""
-      NEW_TAG: ""
-      BAKASU_HASH: ""
-      SUSFS_61: ""
-      BBG_HASH: ""
-      NM_HASH: ""
+    if: inputs.build_normie_battery == true
     steps:
-      - name: Free Disk Space
-        if: true
-        uses: endersonmenezes/free-disk-space@v3
-        with:
-          remove_android: true
-          remove_dotnet: true
-          remove_haskell: true
-          remove_tool_cache: true
-          remove_swap: true
-          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
-          remove_packages_one_command: true
-          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
-          rm_cmd: "rmz"
-          rmz_version: "3.1.1"
-          testing: false
-
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Generate New Tag
-        if: inputs.release_type != 'Actions'
-        run: |
-            LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name' 2>/dev/null || echo "")
-            if [ -z "$LATEST_TAG" ]; then
-              LATEST_TAG="v2.4.0-r0"
-            fi
-
-            NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
-
-            echo "New tag: $NEW_TAG"
-            echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: ./downloaded-artifacts
-          pattern: '*-AnyKernel3'
-
-      - name: Package Timestamped AnyKernel3 Release ZIPs
-        run: |
-          set -e
-          BUILD_STAMP=$(TZ="Asia/Kuwait" date +"%Y%m%d-%H%M")
-          echo "=== Downloaded Artifacts Tree (Stamp: $BUILD_STAMP) ==="
-          find ./downloaded-artifacts -maxdepth 3 || true
-
-          if [ -f "./downloaded-artifacts/anykernel.sh" ]; then
-            ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '[.artifacts[] | select(.name | endswith("-AnyKernel3"))][0].name' 2>/dev/null || echo "")
-            if [ -z "$ARTIFACT_NAME" ]; then
-              ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-AnyKernel3"
-            fi
-            zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}-${BUILD_STAMP}.zip"
-            echo "Packaging ./downloaded-artifacts -> $zip_out"
-            (cd ./downloaded-artifacts && zip -r -9 "$zip_out" .)
-          else
-            mapfile -t AK3_DIRS < <(find ./downloaded-artifacts -mindepth 1 -maxdepth 2 -type d -name '*-AnyKernel3')
-            if [ "${#AK3_DIRS[@]}" -eq 0 ]; then
-              echo "ERROR: No AnyKernel3 files or *-AnyKernel3 directories found under ./downloaded-artifacts!"
-              exit 1
-            fi
-
-            for dir in "${AK3_DIRS[@]}"; do
-              artifact_name=$(basename "$dir")
-              zip_out="$GITHUB_WORKSPACE/${artifact_name}-${BUILD_STAMP}.zip"
-              echo "Packaging $dir -> $zip_out"
-              if [ -d "$dir/AnyKernel3" ] && [ -f "$dir/AnyKernel3/anykernel.sh" ]; then
-                (cd "$dir/AnyKernel3" && zip -r -9 "$zip_out" .)
-              else
-                (cd "$dir" && zip -r -9 "$zip_out" .)
-              fi
-            done
-          fi
-
-          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip
-
       - name: Build Normie-WALT-Battery v1.9 Module ZIP (with KernelSU WebUI)
         run: |
           python3 - << 'PYEOF'
@@ -744,6 +675,115 @@ jobs:
           PYEOF
           ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.9.zip"
 
+      - name: Upload Normie-WALT-Battery Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: Normie-WALT-Battery-v1.9
+          path: Normie-WALT-Battery-v1.9.zip
+          compression-level: 9
+
+  release:
+    runs-on: ubuntu-latest
+    if: inputs.release_type != 'Actions'
+    needs:
+      - build-samsung
+      - build-normie-battery
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_NAME: ""
+      RELEASE_BODY: ""
+      NEW_TAG: ""
+      BAKASU_HASH: ""
+      SUSFS_61: ""
+      BBG_HASH: ""
+      NM_HASH: ""
+    steps:
+      - name: Free Disk Space
+        if: true
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_swap: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Generate New Tag
+        if: inputs.release_type != 'Actions'
+        run: |
+            LATEST_TAG=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name' 2>/dev/null || echo "")
+            if [ -z "$LATEST_TAG" ]; then
+              LATEST_TAG="v2.4.0-r0"
+            fi
+
+            NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
+
+            echo "New tag: $NEW_TAG"
+            echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
+
+      - name: Download AnyKernel3 Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./downloaded-artifacts
+          pattern: '*-AnyKernel3'
+
+      - name: Download Normie-WALT-Battery Artifact
+        if: inputs.build_normie_battery == true
+        uses: actions/download-artifact@v8
+        with:
+          name: Normie-WALT-Battery-v1.9
+          path: ./release-assets
+
+      - name: Package Timestamped AnyKernel3 Release ZIPs
+        run: |
+          set -e
+          BUILD_STAMP=$(TZ="Asia/Kuwait" date +"%Y%m%d-%H%M")
+          echo "=== Downloaded Artifacts Tree (Stamp: $BUILD_STAMP) ==="
+          find ./downloaded-artifacts -maxdepth 3 || true
+
+          if [ -f "./downloaded-artifacts/anykernel.sh" ]; then
+            ARTIFACT_NAME=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" --jq '[.artifacts[] | select(.name | endswith("-AnyKernel3"))][0].name' 2>/dev/null || echo "")
+            if [ -z "$ARTIFACT_NAME" ]; then
+              ARTIFACT_NAME="SM-S928B-Oneui8-android14_6.1-Normie-Kernel-AnyKernel3"
+            fi
+            zip_out="$GITHUB_WORKSPACE/${ARTIFACT_NAME}-${BUILD_STAMP}.zip"
+            echo "Packaging ./downloaded-artifacts -> $zip_out"
+            (cd ./downloaded-artifacts && zip -r -9 "$zip_out" .)
+          else
+            mapfile -t AK3_DIRS < <(find ./downloaded-artifacts -mindepth 1 -maxdepth 2 -type d -name '*-AnyKernel3')
+            if [ "${#AK3_DIRS[@]}" -eq 0 ]; then
+              echo "ERROR: No AnyKernel3 files or *-AnyKernel3 directories found under ./downloaded-artifacts!"
+              exit 1
+            fi
+
+            for dir in "${AK3_DIRS[@]}"; do
+              artifact_name=$(basename "$dir")
+              zip_out="$GITHUB_WORKSPACE/${artifact_name}-${BUILD_STAMP}.zip"
+              echo "Packaging $dir -> $zip_out"
+              if [ -d "$dir/AnyKernel3" ] && [ -f "$dir/AnyKernel3/anykernel.sh" ]; then
+                (cd "$dir/AnyKernel3" && zip -r -9 "$zip_out" .)
+              else
+                (cd "$dir" && zip -r -9 "$zip_out" .)
+              fi
+            done
+          fi
+
+          if [ -f "./release-assets/Normie-WALT-Battery-v1.9.zip" ]; then
+            cp -f "./release-assets/Normie-WALT-Battery-v1.9.zip" "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.9.zip"
+          fi
+
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.9.zip 2>/dev/null || true
+
       - name: get commit hashes
         run: |
          if [[ "${{ inputs.susfs }}" == "true" ]]; then
@@ -852,8 +892,12 @@ jobs:
           -> Battery & Deep Sleep Optimizations - 100Hz tickless idle timer, TEO cpuidle governor, Lazy RCU (RCU_LAZY active at boot), Power-Efficient Workqueues, Suspend Skip Sync, and 32ms PELT decay to prevent prime-core micro-boosts
           -> Scheduler & Wakelock Control - Lowered RT Task UClamp (384) to keep audio/sensor threads off the Cortex-X4 prime core, plus kernel-side Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker)
           -> Kernel Optimization - MGLRU active at boot, THP set to madvise (stops background khugepaged wakeups), ZRAM Multi-Comp (Zstd), and F2FS Zstd/LZ4 compression
+          EOF
+          if [[ "${{ inputs.build_normie_battery }}" == "true" ]]; then
+          cat <<'EOF' >> release_body.md
           -> Companion Module Attached - Normie-WALT-Battery-v1.9.zip included in release assets (KernelSU WebUI with live telemetry, Battery/Stock toggle, screen-aware 4-cluster WALT tuning, and wakelock filtering)
           EOF
+          fi
           fi
 
           echo "-> Built using LTO: ${{ inputs.lto }}" >> release_body.md
@@ -903,7 +947,7 @@ jobs:
           prerelease: ${{ inputs.release_type == 'Pre-Release' }}
           files: |
             *-AnyKernel3-*.zip
-            Normie-WALT-Battery-v1.9.zip
+            ${{ inputs.build_normie_battery && 'Normie-WALT-Battery-v1.9.zip' || '' }}
           fail_on_unmatched_files: true
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md

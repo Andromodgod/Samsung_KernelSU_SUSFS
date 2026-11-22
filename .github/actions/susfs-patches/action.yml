@@ -120,15 +120,6 @@ runs:
             nl = text.rfind("\n", 0, pos)
             return 0 if nl == -1 else nl + 1
 
-        def find_fn_block(text: str, fn_name: str) -> tuple[int, int] | None:
-            m = re.search(rf"^static\s+ssize_t\s+{re.escape(fn_name)}\b", text, re.MULTILINE)
-            if not m:
-                return None
-            start = m.start()
-            nxt = re.search(r"^static\s+\w+", text[m.end():], re.MULTILINE)
-            end = m.end() + nxt.start() if nxt else len(text)
-            return start, end
-
         def insert_before_regex(path_str: str, pattern: str, block: str, label: str) -> None:
             p = Path(path_str)
             if not p.exists():
@@ -151,9 +142,9 @@ runs:
             selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
 
             # 1. sel_write_context
-            span_ctx = find_fn_block(selinuxfs, "sel_write_context")
-            if span_ctx:
-                ctx_section = selinuxfs[span_ctx[0]:span_ctx[1]]
+            m_ctx = re.search(r"\bsel_write_context\b", selinuxfs)
+            if m_ctx:
+                ctx_section = selinuxfs[m_ctx.start():m_ctx.start() + 6000]
                 m1 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", ctx_section)
                 b1 = (
                     "#ifdef CONFIG_KSU_SUSFS\n"
@@ -167,7 +158,7 @@ runs:
                 if has_substr(selinuxfs, b1.strip()):
                     print("[skip] sel_write_context hide already present")
                 elif m1:
-                    abs1 = line_start_offset(selinuxfs, span_ctx[0] + m1.start())
+                    abs1 = line_start_offset(selinuxfs, m_ctx.start() + m1.start())
                     selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
                     print("[ok] Applied sel_write_context hide")
                 else:
@@ -175,10 +166,10 @@ runs:
             else:
                 print("[warn] sel_write_context not found, skipping")
 
-            # 2 & 3. sel_write_access
-            span_acc = find_fn_block(selinuxfs, "sel_write_access")
-            if span_acc:
-                acc_section = selinuxfs[span_acc[0]:span_acc[1]]
+            # 2. sel_write_access context hide
+            m_acc = re.search(r"\bsel_write_access\b", selinuxfs)
+            if m_acc:
+                acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
                 m2 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", acc_section)
                 b2 = (
                     "#ifdef CONFIG_KSU_SUSFS\n"
@@ -193,14 +184,15 @@ runs:
                 if has_substr(selinuxfs, b2.strip()):
                     print("[skip] sel_write_access context hide already present")
                 elif m2:
-                    abs2 = line_start_offset(selinuxfs, span_acc[0] + m2.start())
+                    abs2 = line_start_offset(selinuxfs, m_acc.start() + m2.start())
                     selinuxfs = selinuxfs[:abs2] + b2 + selinuxfs[abs2:]
                     print("[ok] Applied sel_write_access context hide")
                 else:
                     print("[warn] SID lookup anchor not found in sel_write_access, skipping")
 
-                span_acc = find_fn_block(selinuxfs, "sel_write_access")
-                acc_section = selinuxfs[span_acc[0]:span_acc[1]]
+                # 3. sel_write_access execmem mask
+                m_acc = re.search(r"\bsel_write_access\b", selinuxfs)
+                acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
                 m3 = re.search(r"\bscnprintf\s*\(\s*buf\b", acc_section)
                 b3 = (
                     "#ifdef CONFIG_KSU_SUSFS\n"
@@ -214,7 +206,7 @@ runs:
                 if has_substr(selinuxfs, b3.strip()):
                     print("[skip] sel_write_access execmem mask already present")
                 elif m3:
-                    abs3 = line_start_offset(selinuxfs, span_acc[0] + m3.start())
+                    abs3 = line_start_offset(selinuxfs, m_acc.start() + m3.start())
                     selinuxfs = selinuxfs[:abs3] + b3 + selinuxfs[abs3:]
                     print("[ok] Applied sel_write_access execmem mask")
                 else:

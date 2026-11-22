@@ -501,6 +501,7 @@ jobs:
           Please ensure you have proper backups before installation.
 
           Features:
+          -> Supported ROMs - One UI 8, One UI 8.5 & One UI 9 (SM-S928B android14-6.1 GKI)
           EOF
 
           if [[ "${{ inputs.ksun }}" == "true" ]]; then

@@ -7,6 +7,9 @@ permissions:
 on:
   workflow_call:
     inputs:
+      oneui_targets:
+        required: true
+        type: string
       susfs:
         required: true
         type: string
@@ -48,18 +51,28 @@ on:
         type: string
 
 jobs:
+  select-targets:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix_include: ${{ steps.set_matrix.outputs.matrix_include }}
+    steps:
+      - name: Build target matrix from selection
+        id: set_matrix
+        run: |
+          if [[ "${{ inputs.oneui_targets }}" == "all" ]]; then
+            JSON='[{"branch":"SM-S928B-Oneui9","build_type":"Bazel"},{"branch":"SM-S928B-Oneui8.5","build_type":"Bazel"},{"branch":"SM-S928B-Oneui8","build_type":"Bazel"}]'
+          else
+            JSON="[{\"branch\":\"${{ inputs.oneui_targets }}\",\"build_type\":\"Bazel\"}]"
+          fi
+          echo "matrix_include=$JSON" >> "$GITHUB_OUTPUT"
+
   build-kernels-a12:
+    needs: select-targets
     name: "Samsung-${{ matrix.branch }}"
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - branch: "SM-S928B-Oneui9"
-            build_type: "Bazel"
-          - branch: "SM-S928B-Oneui8.5"
-            build_type: "Bazel"
-          - branch: "SM-S928B-Oneui8"
-            build_type: "Bazel"
+        include: ${{ fromJson(needs.select-targets.outputs.matrix_include) }}
 
     uses: ./.github/workflows/build.yml
     secrets: inherit

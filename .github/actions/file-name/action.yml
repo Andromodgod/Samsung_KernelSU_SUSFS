@@ -1,8 +1,8 @@
 name: set file name for ak3zip
 description: set file name for ak3 zip
 inputs:
- ksun:
-  description: 'ksun'
+ bakasu:
+  description: 'bakasu'
   required: true
  susfs:
   description: 'susfs'
@@ -42,7 +42,7 @@ runs:
           
      # This gives dynamic file name depending on which features are enabled
      FILE_NAME="${ARTIFACT_BASE}"
-     [[ "${{ inputs.ksun }}" == "true" ]] && FILE_NAME="${FILE_NAME}-KSUN${KSU_VERSION}"
+     [[ "${{ inputs.bakasu }}" == "true" ]] && FILE_NAME="${FILE_NAME}-BAKASU"
      [[ "${{ inputs.susfs }}" == "true" ]] && FILE_NAME="${FILE_NAME}-SUSFS"
      [[ "${{ inputs.nomount }}" == "true" ]] && FILE_NAME="${FILE_NAME}-NM"
      [[ "${{ inputs.bbg }}" == "true" ]] && FILE_NAME="${FILE_NAME}-BBG"

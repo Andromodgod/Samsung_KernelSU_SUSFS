@@ -27,7 +27,7 @@ on:
           - full
         default: full
 
-      ksun:
+      bakasu:
         description: "BakaSU"
         required: false
         default: true
@@ -109,7 +109,7 @@ jobs:
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
-      ksun: ${{ inputs.ksun }}
+      bakasu: ${{ inputs.bakasu }}
       droidspace: ${{ inputs.droidspace }}
       ntsync: ${{ inputs.ntsync }}
       bbrv3: ${{ inputs.bbrv3 }}
@@ -749,7 +749,7 @@ jobs:
          if [[ "${{ inputs.susfs }}" == "true" ]]; then
            echo "SUSFS_61=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | cut -f1)" >> $GITHUB_ENV
          fi
-         if [[ "${{ inputs.ksun }}" == "true" ]]; then
+         if [[ "${{ inputs.bakasu }}" == "true" ]]; then
            echo "BAKASU_HASH=$(git ls-remote https://github.com/Baka-SU/BakaSU.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
          fi
          if [[ "${{ inputs.bbg }}" == "true" ]]; then
@@ -761,7 +761,7 @@ jobs:
 
       - name: Set dynamic release title and body
         run: |
-          if [[ "${{ inputs.ksun }}" == "true" ]]; then
+          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
             echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS" >> $GITHUB_ENV
           else
             echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel (Clean / Bring-Your-Own-Root)" >> $GITHUB_ENV
@@ -777,7 +777,7 @@ jobs:
           -> Supported ROMs - One UI 8, One UI 8.5 & One UI 9 (SM-S928B android14-6.1 GKI)
           EOF
 
-          if [[ "${{ inputs.ksun }}" == "true" ]]; then
+          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
           -> BakaSU - https://github.com/Baka-SU/BakaSU
           EOF
@@ -858,7 +858,7 @@ jobs:
 
           echo "-> Built using LTO: ${{ inputs.lto }}" >> release_body.md
 
-          if [[ "${{ inputs.ksun }}" != "true" ]]; then
+          if [[ "${{ inputs.bakasu }}" != "true" ]]; then
           cat <<'EOF' >> release_body.md
 
           Installation (Bring Your Own Root):
@@ -869,12 +869,12 @@ jobs:
           EOF
           fi
 
-          if [[ "${{ inputs.ksun }}" == "true" || "${{ inputs.susfs }}" == "true" || "${{ inputs.bbg }}" == "true" || "${{ inputs.nomount }}" == "true" ]]; then
+          if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.susfs }}" == "true" || "${{ inputs.bbg }}" == "true" || "${{ inputs.nomount }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
 
           Commit Hashes:
           EOF
-          if [[ "${{ inputs.ksun }}" == "true" ]]; then
+          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
           BakaSU: ${{ env.BAKASU_HASH }}
           EOF

@@ -24,7 +24,7 @@ on:
       nomount:
         required: true
         type: string
-      ksun:
+      bakasu:
         required: true
         type: string
       droidspace:
@@ -183,13 +183,13 @@ jobs:
           done
 
       - name: Add BakaSU
-        if: inputs.ksun == 'true'
+        if: inputs.bakasu == 'true'
         run: |
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
           cd "$KERNEL_ROOT"
-          rm -rf drivers/kernelsu KernelSU KernelSU-Next BakaSU
+          rm -rf drivers/kernelsu KernelSU BakaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
           # Materialize drivers/kernelsu symlink into a real directory for Bazel's sandbox
@@ -255,7 +255,7 @@ jobs:
         uses: ./.github/actions/optimization
 
       - name: Set Kernel Configuration Variables
-        if: inputs.ksun == 'true'
+        if: inputs.bakasu == 'true'
         uses: ./.github/actions/configs
 
       - name: Clean BakaSU Kconfig & Bypass check_defconfig
@@ -266,7 +266,7 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            if [ "${{ inputs.ksun }}" == "true" ]; then
+            if [ "${{ inputs.bakasu }}" == "true" ]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [ "${{ inputs.susfs }}" == "true" ]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
@@ -305,7 +305,7 @@ jobs:
       - name: Set file name
         uses: ./.github/actions/file-name
         with:
-         ksun: ${{ inputs.ksun }}
+         bakasu: ${{ inputs.bakasu }}
          susfs: ${{ inputs.susfs }}
          nomount: ${{ inputs.nomount }}
          bbg: ${{ inputs.bbg }}
@@ -318,9 +318,7 @@ jobs:
 
       - name: Set Normie-Kernel and bakasu in Output Filename
         run: |
-          NEW_FILE_NAME="${FILE_NAME//KSUN/bakasu}"
-          NEW_FILE_NAME="${NEW_FILE_NAME//ksun/bakasu}"
-          NEW_FILE_NAME="${NEW_FILE_NAME//Haroon-Kernel/Normie-Kernel}"
+          NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
 
           if [[ "$NEW_FILE_NAME" != *"Normie-Kernel"* ]]; then

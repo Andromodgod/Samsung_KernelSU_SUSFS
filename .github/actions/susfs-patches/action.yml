@@ -134,7 +134,13 @@ runs:
           sed -i '/#include <linux\/pkeys.h>/a #include <linux/page_size_compat.h>' fs/proc/task_mmu.c
           echo "Added page_size_compat.h include to fs/proc/task_mmu.c"
         fi
-       
+
+   - name: Apply SELinux ksu/lsposed context hide patch
+     shell: bash
+     run: |
+      cd "$COMMON"
+      patch -p1 < "${{ github.action_path }}/susfs_selinux_hide.patch"
+
    - name: undo namespace.c fake patch since trace/hooks/blk.h doesn't exist in kernel
      shell: bash
      run: |

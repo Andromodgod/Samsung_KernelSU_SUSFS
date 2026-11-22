@@ -192,7 +192,6 @@ jobs:
           rm -rf drivers/kernelsu KernelSU BakaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
-          # Materialize drivers/kernelsu symlink into a real directory for Bazel's sandbox
           if [ -L "drivers/kernelsu" ]; then
             TARGET=$(readlink -f "drivers/kernelsu")
             rm -f "drivers/kernelsu"
@@ -200,7 +199,6 @@ jobs:
             echo "Materialized drivers/kernelsu from $TARGET"
           fi
 
-          # Patch KSU_SRC and bypass the .git submodule check (Kbuild:71) inside Bazel sandbox
           for KBUILD_FILE in \
             "$KERNEL_ROOT/drivers/kernelsu/Kbuild" \
             "$KERNEL_ROOT/KernelSU/kernel/Kbuild" \

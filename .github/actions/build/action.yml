@@ -1,4 +1,4 @@
-Name: build kernel
+name: build kernel
 description: each samsung kernel has its own way of building the kernel, they are sorted here.
 inputs:
   ccache:
@@ -20,7 +20,7 @@ runs:
         cd "$CONFIG"
         echo "Building the kernel..."
 
-        # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
+        # Prepare kernel tree for Bazel sandbox (BakaSU/FinaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
         KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
         if [ -d "$KERNEL_DIR" ]; then
           # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
@@ -32,9 +32,16 @@ runs:
             fi
           done
 
-          # 2. Resolve BakaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
+          # 2. Resolve BakaSU/FinaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
           KSU_REPO=""
-          for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
+          for repo in \
+            "$GITHUB_WORKSPACE/FinaSU" \
+            "$KERNEL_DIR/FinaSU" \
+            "$KERNEL_DIR/BakaSU" \
+            "$KERNEL_DIR/KernelSU" \
+            "$ROOT/FinaSU" \
+            "$ROOT/BakaSU" \
+            "$ROOT/KernelSU"; do
             if [ -d "$repo/.git" ]; then
               KSU_REPO="$repo"
               break
@@ -52,7 +59,7 @@ runs:
           else
             KSU_VER="${KSU_VERSION_OVERRIDE:-35281}"
           fi
-          echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
+          echo "Resolved KSU_VERSION=$KSU_VER (repo: ${KSU_REPO:-none})"
 
           UAPI_SRC=""
           for candidate in \
@@ -95,6 +102,7 @@ runs:
             kernel_dir / "drivers/kernelsu/Kbuild",
             kernel_dir / "KernelSU/kernel/Kbuild",
             kernel_dir / "BakaSU/kernel/Kbuild",
+            kernel_dir / "FinaSU/kernel/Kbuild",
         ]
 
         for kbuild in targets:
@@ -103,7 +111,7 @@ runs:
             text = kbuild.read_text(encoding="utf-8", errors="ignore")
 
             text = re.sub(
-                r"\$\(error\b(?=[^\n]*(?:BakaSU|KernelSU|git submodule))",
+                r"\$\(error\b(?=[^\n]*(?:BakaSU|FinaSU|KernelSU|git submodule))",
                 "$(warning",
                 text,
             )
@@ -164,6 +172,7 @@ runs:
             kernel_dir / "drivers/kernelsu/susfs.c",
             kernel_dir / "KernelSU/kernel/susfs.c",
             kernel_dir / "BakaSU/kernel/susfs.c",
+            kernel_dir / "FinaSU/kernel/susfs.c",
         ]
 
         patched = False

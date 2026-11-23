@@ -1,4 +1,4 @@
-name: build kernel
+Name: build kernel
 description: each samsung kernel has its own way of building the kernel, they are sorted here.
 inputs:
   ccache:
@@ -152,6 +152,39 @@ runs:
             )
             kbuild.write_text(header + "\n".join(patched_lines) + footer, encoding="utf-8")
             print(f"Patched {kbuild}")
+        PYEOF
+
+          # 3b. Set default SUSFS runtime logging to false at boot without needing a service.d script
+          python3 - "$KERNEL_DIR" << 'PYEOF'
+        import pathlib, sys
+
+        kernel_dir = pathlib.Path(sys.argv[1])
+        susfs_sources = [
+            kernel_dir / "fs/susfs.c",
+            kernel_dir / "drivers/kernelsu/susfs.c",
+            kernel_dir / "KernelSU/kernel/susfs.c",
+            kernel_dir / "BakaSU/kernel/susfs.c",
+        ]
+
+        patched = False
+        for src in susfs_sources:
+            if not src.is_file():
+                continue
+            txt = src.read_text(encoding="utf-8", errors="ignore")
+            new_txt = txt.replace(
+                "bool susfs_is_log_enabled __read_mostly = true;",
+                "bool susfs_is_log_enabled __read_mostly = false;",
+            ).replace(
+                "bool susfs_is_log_enabled = true;",
+                "bool susfs_is_log_enabled = false;",
+            )
+            if new_txt != txt:
+                src.write_text(new_txt, encoding="utf-8")
+                print(f"Disabled default SUSFS log in {src}")
+                patched = True
+
+        if not patched:
+            print("Note: susfs_is_log_enabled initializer not found or already false")
         PYEOF
 
           # 4. Apply KMI-safe battery life optimizations, drivers, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
@@ -454,7 +487,8 @@ runs:
                         "static struct attribute *boeffla_wl_attrs[] = { &dev_attr_wakelock_blocker.attr, NULL };\n"
                         "ATTRIBUTE_GROUPS(boeffla_wl);\n"
                         "static struct miscdevice boeffla_wl_device = { .minor = MISC_DYNAMIC_MINOR, .name = \"boeffla_wakelock_blocker\", .groups = boeffla_wl_groups };\n\n"
-                        "static int __init boeffla_wl_init(void)\n{\n\treturn misc_register(&boeffla_wl_device);\n}\n"
+                        "static int __init boeffla_wl_init(void)\n"
+                        "{\n\treturn misc_register(&boeffla_wl_device);\n}\n"
                         "late_initcall(boeffla_wl_init);\n"
                     )
                     wtxt = wtxt + boeffla_sysfs

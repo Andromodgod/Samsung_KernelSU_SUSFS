@@ -10,6 +10,10 @@ on:
       oneui_targets:
         required: true
         type: string
+      root_provider:
+        required: false
+        type: string
+        default: both
       susfs:
         required: true
         type: string
@@ -23,8 +27,9 @@ on:
         required: true
         type: string
       bakasu:
-        required: true
+        required: false
         type: string
+        default: "true"
       droidspace:
         required: true
         type: string
@@ -59,16 +64,43 @@ jobs:
       - name: Build target matrix from selection
         id: set_matrix
         run: |
-          if [[ "${{ inputs.oneui_targets }}" == "all" ]]; then
-            JSON='[{"branch":"SM-S928B-Oneui9","build_type":"Bazel"},{"branch":"SM-S928B-Oneui8.5","build_type":"Bazel"},{"branch":"SM-S928B-Oneui8","build_type":"Bazel"}]'
-          else
-            JSON="[{\"branch\":\"${{ inputs.oneui_targets }}\",\"build_type\":\"Bazel\"}]"
-          fi
-          echo "matrix_include=$JSON" >> "$GITHUB_OUTPUT"
+          python3 - << 'PYEOF'
+          import json, os
+
+          target_in = "${{ inputs.oneui_targets }}"
+          root_in = "${{ inputs.root_provider }}" or ("bakasu" if "${{ inputs.bakasu }}" == "true" else "clean")
+
+          if target_in == "all":
+              branches = ["SM-S928B-Oneui9", "SM-S928B-Oneui8.5", "SM-S928B-Oneui8"]
+          else:
+              branches = [target_in]
+
+          if root_in == "both":
+              roots = ["bakasu", "finasu"]
+          elif root_in in ("bakasu", "finasu", "clean"):
+              roots = [root_in]
+          else:
+              roots = ["bakasu"]
+
+          matrix_include = [
+              {
+                  "branch": branch,
+                  "build_type": "Bazel",
+                  "root_provider": root,
+                  "bakasu": "true" if root == "bakasu" else "false",
+                  "finasu": "true" if root == "finasu" else "false",
+              }
+              for branch in branches
+              for root in roots
+          ]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write("matrix_include=" + json.dumps(matrix_include) + "\n")
+          PYEOF
 
   build-kernels-a12:
     needs: select-targets
-    name: "Samsung-${{ matrix.branch }}"
+    name: "Samsung-${{ matrix.branch }}-${{ matrix.root_provider }}"
     strategy:
       fail-fast: false
       matrix:
@@ -79,11 +111,13 @@ jobs:
     with:
       branch: ${{ matrix.branch }}
       build_type: ${{ matrix.build_type }}
+      root_provider: ${{ matrix.root_provider }}
+      bakasu: ${{ matrix.bakasu }}
+      finasu: ${{ matrix.finasu }}
       susfs: ${{ inputs.susfs }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
-      bakasu: ${{ inputs.bakasu }}
       droidspace: ${{ inputs.droidspace }}
       ntsync: ${{ inputs.ntsync }}
       bbrv3: ${{ inputs.bbrv3 }}

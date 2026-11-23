@@ -32,6 +32,12 @@ runs:
         cp "$SUSFS4KSU/kernel_patches/include/linux/"* ./include/linux/
         cp "$SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch" ./
 
+        sed -i \
+          -e 's/bool susfs_is_log_enabled __read_mostly = true;/bool susfs_is_log_enabled __read_mostly = false;/g' \
+          -e 's/bool susfs_is_log_enabled = true;/bool susfs_is_log_enabled = false;/g' \
+          ./fs/susfs.c
+        grep -n "susfs_is_log_enabled" ./fs/susfs.c || true
+
     - name: prepare open.c for susfs patch
       shell: bash
       run: |

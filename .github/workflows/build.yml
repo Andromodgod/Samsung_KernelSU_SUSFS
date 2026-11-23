@@ -12,6 +12,10 @@ on:
       build_type:
         required: false
         type: string
+      root_provider:
+        required: false
+        type: string
+        default: bakasu
       susfs:
         required: true
         type: string
@@ -27,6 +31,10 @@ on:
       bakasu:
         required: true
         type: string
+      finasu:
+        required: false
+        type: string
+        default: "false"
       droidspace:
         required: true
         type: string
@@ -54,7 +62,7 @@ on:
 
 jobs:
   build-samsung-gki:
-    name: "${{ inputs.branch }}"
+    name: "${{ inputs.branch }} (${{ inputs.root_provider }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -63,10 +71,21 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Store branch as env variable
+      - name: Store branch and root_provider as env variables
         run: |
           BRANCH=${{ inputs.branch }}
+          ROOT_PROVIDER=${{ inputs.root_provider }}
+          if [ -z "$ROOT_PROVIDER" ]; then
+            if [[ "${{ inputs.finasu }}" == "true" ]]; then
+              ROOT_PROVIDER="finasu"
+            elif [[ "${{ inputs.bakasu }}" == "true" ]]; then
+              ROOT_PROVIDER="bakasu"
+            else
+              ROOT_PROVIDER="clean"
+            fi
+          fi
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "ROOT_PROVIDER=$ROOT_PROVIDER" >> $GITHUB_ENV
 
       - name: get kernel version before cloning
         uses: ./.github/actions/kernel-info
@@ -185,13 +204,13 @@ jobs:
           done
 
       - name: Add BakaSU
-        if: inputs.bakasu == 'true'
+        if: inputs.bakasu == 'true' && inputs.finasu != 'true'
         run: |
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
           cd "$KERNEL_ROOT"
-          rm -rf drivers/kernelsu KernelSU BakaSU
+          rm -rf drivers/kernelsu KernelSU BakaSU FinaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
           TARGET_KSU_VER=35282
@@ -223,6 +242,49 @@ jobs:
               grep -n -E "KSU_SRC|KSU_LOCAL_VERSION|KSU_VERSION" "$KBUILD_FILE" || true
             fi
           done
+
+      - name: Add FinaSU
+        if: inputs.finasu == 'true'
+        run: |
+          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
+          echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
+
+          cd "$KERNEL_ROOT"
+          rm -rf drivers/kernelsu KernelSU BakaSU FinaSU "$GITHUB_WORKSPACE/FinaSU"
+          git clone --depth=1 https://github.com/LyraVoid/FinaSU.git "$GITHUB_WORKSPACE/FinaSU"
+
+          if [ -f "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" ]; then
+            bash "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" --dir "$GITHUB_WORKSPACE/FinaSU"
+          elif [ -f "$GITHUB_WORKSPACE/FinaSU/setup.sh" ]; then
+            bash "$GITHUB_WORKSPACE/FinaSU/setup.sh"
+          else
+            mkdir -p drivers/kernelsu
+            if [ -d "$GITHUB_WORKSPACE/FinaSU/kernel" ]; then
+              cp -a "$GITHUB_WORKSPACE/FinaSU/kernel/." "drivers/kernelsu/"
+            else
+              cp -a "$GITHUB_WORKSPACE/FinaSU/." "drivers/kernelsu/"
+            fi
+          fi
+
+          if [ -d "$GITHUB_WORKSPACE/FinaSU/.git" ] && [ -f "$GITHUB_WORKSPACE/FinaSU/.git/shallow" ]; then
+            git -C "$GITHUB_WORKSPACE/FinaSU" fetch --unshallow 2>/dev/null || true
+          fi
+
+          if [ -L "drivers/kernelsu" ]; then
+            TARGET=$(readlink -f "drivers/kernelsu")
+            rm -f "drivers/kernelsu"
+            cp -a "$TARGET" "drivers/kernelsu"
+            echo "Materialized FinaSU drivers/kernelsu from $TARGET"
+          elif [ -d "drivers/kernelsu" ]; then
+            cp -a "$GITHUB_WORKSPACE/FinaSU/kernel/." "drivers/kernelsu/" 2>/dev/null || true
+          fi
+
+          if [ -f "drivers/Makefile" ] && ! grep -q "kernelsu" "drivers/Makefile"; then
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "drivers/Makefile"
+          fi
+          if [ -f "drivers/Kconfig" ] && ! grep -q "drivers/kernelsu/Kconfig" "drivers/Kconfig"; then
+            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "drivers/Kconfig"
+          fi
 
       - name: Add SUSFS
         if: inputs.susfs == 'true'
@@ -265,10 +327,10 @@ jobs:
         uses: ./.github/actions/optimization
 
       - name: Set Kernel Configuration Variables
-        if: inputs.bakasu == 'true'
+        if: inputs.bakasu == 'true' || inputs.finasu == 'true'
         uses: ./.github/actions/configs
 
-      - name: Clean BakaSU Kconfig & Bypass check_defconfig
+      - name: Clean Root Kconfig & Bypass check_defconfig
         run: |
           KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
           DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
@@ -276,7 +338,7 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            if [[ "${{ inputs.bakasu }}" == "true" ]]; then
+            if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
@@ -310,7 +372,7 @@ jobs:
           ttl: ${{ inputs.ttl }}
           unicodefix: ${{ inputs.unicodefix }}
 
-      - name: Set Normie-Kernel and bakasu in Output Filename
+      - name: Set Normie-Kernel and Root Variant in Output Filename
         run: |
           NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
@@ -322,6 +384,24 @@ jobs:
               NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel"
             fi
           fi
+
+          case "${{ env.ROOT_PROVIDER }}" in
+            finasu)
+              if [[ "$NEW_FILE_NAME" != *"-finasu"* && "$NEW_FILE_NAME" != *"-FinaSU"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-finasu"
+              fi
+              ;;
+            bakasu)
+              if [[ "$NEW_FILE_NAME" != *"-bakasu"* && "$NEW_FILE_NAME" != *"-BakaSU"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-bakasu"
+              fi
+              ;;
+            clean)
+              if [[ "$NEW_FILE_NAME" != *"-clean"* && "$NEW_FILE_NAME" != *"-Clean"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-clean"
+              fi
+              ;;
+          esac
 
           echo "FILE_NAME=$NEW_FILE_NAME" >> $GITHUB_ENV
           echo "Output FILE_NAME set to: $NEW_FILE_NAME"
@@ -411,24 +491,33 @@ jobs:
           echo "- **Android Version**: ${ANDROID_VER}" >> build_summary.md
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
+          echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
           echo "- **BBG**: Installed" >> build_summary.md
           echo "" >> build_summary.md
 
-          BAKASU_DIR=""
-          if [ -d "$KERNEL_ROOT/BakaSU" ]; then
-            BAKASU_DIR="$KERNEL_ROOT/BakaSU"
-          elif [ -d "$KERNEL_ROOT/KernelSU" ]; then
-            BAKASU_DIR="$KERNEL_ROOT/KernelSU"
-          fi
-
-          if [ -n "$BAKASU_DIR" ]; then
-            cd "$BAKASU_DIR"
-            BAKASU_COMMIT=$(git rev-parse HEAD)
-            BAKASU_URL="https://github.com/Baka-SU/BakaSU/commit/$BAKASU_COMMIT"
-            echo "- **BakaSU**: [$BAKASU_COMMIT]($BAKASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
-            cd "$GITHUB_WORKSPACE"
+          if [[ "${{ inputs.finasu }}" == "true" && -d "$GITHUB_WORKSPACE/FinaSU" ]]; then
+            FINASU_COMMIT=$(git -C "$GITHUB_WORKSPACE/FinaSU" rev-parse HEAD)
+            FINASU_URL="https://github.com/LyraVoid/FinaSU/commit/$FINASU_COMMIT"
+            echo "- **FinaSU**: [$FINASU_COMMIT]($FINASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
+          elif [[ "${{ inputs.finasu }}" == "true" ]]; then
+            echo "- **FinaSU**: enabled (commit unavailable)" >> build_summary.md
           else
-            echo "- **BakaSU**: not present" >> build_summary.md
+            BAKASU_DIR=""
+            if [ -d "$KERNEL_ROOT/BakaSU" ]; then
+              BAKASU_DIR="$KERNEL_ROOT/BakaSU"
+            elif [ -d "$KERNEL_ROOT/KernelSU" ]; then
+              BAKASU_DIR="$KERNEL_ROOT/KernelSU"
+            fi
+
+            if [ -n "$BAKASU_DIR" ]; then
+              cd "$BAKASU_DIR"
+              BAKASU_COMMIT=$(git rev-parse HEAD)
+              BAKASU_URL="https://github.com/Baka-SU/BakaSU/commit/$BAKASU_COMMIT"
+              echo "- **BakaSU**: [$BAKASU_COMMIT]($BAKASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
+              cd "$GITHUB_WORKSPACE"
+            else
+              echo "- **BakaSU**: not present" >> build_summary.md
+            fi
           fi
 
           if [ -d "$CONFIG/Baseband-guard" ]; then

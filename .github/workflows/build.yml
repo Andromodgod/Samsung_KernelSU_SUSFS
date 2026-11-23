@@ -194,6 +194,8 @@ jobs:
           rm -rf drivers/kernelsu KernelSU BakaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
+          TARGET_KSU_VER=35282
+
           for repo in "$KERNEL_ROOT/BakaSU" "$KERNEL_ROOT/KernelSU" "drivers/kernelsu"; do
             if [ -d "$repo/.git" ] && [ -f "$repo/.git/shallow" ]; then
               git -C "$repo" fetch --unshallow 2>/dev/null || true
@@ -215,8 +217,10 @@ jobs:
               sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$KBUILD_FILE"
               grep -q "KSU_SRC :=" "$KBUILD_FILE" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$KBUILD_FILE"
               sed -i '/You should use BakaSU as a git submodule/d' "$KBUILD_FILE"
-              echo "Patched KSU_SRC in $KBUILD_FILE:"
-              grep -n "KSU_SRC" "$KBUILD_FILE" || true
+              sed -i -E "s|^(KSU_LOCAL_VERSION[[:space:]]*[:?]?=).*|\1 $TARGET_KSU_VER|g" "$KBUILD_FILE"
+              sed -i -E "s|^(KSU_VERSION[[:space:]]*[:?]?=).*|\1 $TARGET_KSU_VER|g" "$KBUILD_FILE"
+              echo "Patched Kbuild in $KBUILD_FILE:"
+              grep -n -E "KSU_SRC|KSU_LOCAL_VERSION|KSU_VERSION" "$KBUILD_FILE" || true
             fi
           done
 

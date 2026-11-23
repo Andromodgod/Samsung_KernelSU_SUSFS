@@ -246,10 +246,12 @@ jobs:
                   read -r state < "$BL"
                   [ "$state" = "0" ] && return 0 || return 1
               fi
-              case "$(dumpsys power 2>/dev/null | grep -m 1 'mWakefulness=')" in
-                  *Awake*) return 0 ;;
-                  *) return 1 ;;
-              esac
+              for br in /sys/class/backlight/*/brightness; do
+                  [ -r "$br" ] || continue
+                  read -r bval < "$br"
+                  [ "${bval:-0}" -gt 0 ] && return 0 || return 1
+              done
+              return 0
           }
 
           apply_system_battery_tweaks() {
@@ -392,7 +394,7 @@ jobs:
           }
 
           if [ "$HOT_MODE" -eq 1 ]; then
-              echo "$(date '+%H:%M:%S') service.sh v1.10 hot-applied (PID $$)" >> "$LOG"
+              echo "$(date '+%H:%M:%S') service.sh v1.10 hot-applied" >> "$LOG"
               apply_current_mode_once
               if [ -r "$PIDFILE" ]; then
                   OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
@@ -402,66 +404,68 @@ jobs:
                   fi
               fi
           else
-              echo "$(date '+%H:%M:%S') service.sh v1.10 started (PID $$)" > "$LOG"
+              echo "$(date '+%H:%M:%S') service.sh v1.10 started" > "$LOG"
               apply_current_mode_once
           fi
 
-          printf '%s\\n' "$$" > "$PIDFILE"
-
-          smart_sleep() {
-              secs="$1"
-              i=0
-              while [ "$i" -lt "$secs" ]; do
-                  consume_reset_flag_if_present
-                  if [ -f "$TRIG" ]; then
-                      rm -f "$TRIG"
-                      return 0
-                  fi
-                  sleep 1
-                  i=$((i + 1))
-              done
-          }
-
-          LAST_STATE=""
-          while true; do
-              consume_reset_flag_if_present
-              MODE="battery"
-              [ -r "$CONF" ] && read -r MODE < "$CONF"
-
-              read -r u1 u2 u3 _ < /proc/sys/walt/sched_upmigrate 2>/dev/null
-              CUR_UP="$u1 $u2 $u3"
-
-              if [ "$MODE" = "stock" ]; then
-                  if [ "$LAST_STATE" != "STOCK" ] || [ "$CUR_UP" != "95 95 95" ]; then
-                      apply_stock_profile
-                      if [ "$LAST_STATE" != "STOCK" ]; then
-                          echo "$(date '+%H:%M:%S') Applied STOCK profile" >> "$LOG"
-                          LAST_STATE="STOCK"
+          (
+              printf '%s\\n' "$$" > "$PIDFILE"
+              smart_sleep() {
+                  secs="$1"
+                  i=0
+                  while [ "$i" -lt "$secs" ]; do
+                      consume_reset_flag_if_present
+                      if [ -f "$TRIG" ]; then
+                          rm -f "$TRIG"
+                          return 0
                       fi
-                  fi
-                  smart_sleep 10
-              else
-                  if is_screen_on; then
-                      if [ "$LAST_STATE" != "ON" ] || [ "$CUR_UP" != "85 90 96" ]; then
-                          apply_screen_on_profile
-                          if [ "$LAST_STATE" != "ON" ]; then
-                              echo "$(date '+%H:%M:%S') Switched to SCREEN_ON profile" >> "$LOG"
-                              LAST_STATE="ON"
+                      sleep 1
+                      i=$((i + 1))
+                  done
+              }
+
+              LAST_STATE=""
+              while true; do
+                  consume_reset_flag_if_present
+                  MODE="battery"
+                  [ -r "$CONF" ] && read -r MODE < "$CONF"
+
+                  read -r u1 u2 u3 _ < /proc/sys/walt/sched_upmigrate 2>/dev/null
+                  CUR_UP="$u1 $u2 $u3"
+
+                  if [ "$MODE" = "stock" ]; then
+                      if [ "$LAST_STATE" != "STOCK" ] || [ "$CUR_UP" != "95 95 95" ]; then
+                          apply_stock_profile
+                          if [ "$LAST_STATE" != "STOCK" ]; then
+                              echo "$(date '+%H:%M:%S') Applied STOCK profile" >> "$LOG"
+                              LAST_STATE="STOCK"
                           fi
                       fi
                       smart_sleep 10
                   else
-                      if [ "$LAST_STATE" != "OFF" ] || [ "$CUR_UP" != "95 98 99" ]; then
-                          apply_screen_off_profile
-                          if [ "$LAST_STATE" != "OFF" ]; then
-                              echo "$(date '+%H:%M:%S') Switched to SCREEN_OFF profile" >> "$LOG"
-                              LAST_STATE="OFF"
+                      if is_screen_on; then
+                          if [ "$LAST_STATE" != "ON" ] || [ "$CUR_UP" != "85 90 96" ]; then
+                              apply_screen_on_profile
+                              if [ "$LAST_STATE" != "ON" ]; then
+                                  echo "$(date '+%H:%M:%S') Switched to SCREEN_ON profile" >> "$LOG"
+                                  LAST_STATE="ON"
+                              fi
                           fi
+                          smart_sleep 10
+                      else
+                          if [ "$LAST_STATE" != "OFF" ] || [ "$CUR_UP" != "95 98 99" ]; then
+                              apply_screen_off_profile
+                              if [ "$LAST_STATE" != "OFF" ]; then
+                                  echo "$(date '+%H:%M:%S') Switched to SCREEN_OFF profile" >> "$LOG"
+                                  LAST_STATE="OFF"
+                              fi
+                          fi
+                          smart_sleep 25
                       fi
-                      smart_sleep 25
                   fi
-              fi
-          done
+              done
+          ) </dev/null >/dev/null 2>&1 &
+          exit 0
           ''',
               "webroot/index.html": '''<!DOCTYPE html>
           <html lang="en">

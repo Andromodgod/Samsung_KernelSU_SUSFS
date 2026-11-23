@@ -28,6 +28,17 @@ on:
           - SM-S928B-Oneui8
         default: all
 
+      root_provider:
+        description: "Select Root Solution(s) to Build"
+        required: true
+        type: choice
+        options:
+          - both
+          - bakasu
+          - finasu
+          - clean
+        default: both
+
       build_normie_battery:
         description: "Build & Include Normie-WALT-Battery v1.10 ZIP (with WebUI)"
         required: false
@@ -43,12 +54,6 @@ on:
           - thin
           - full
         default: full
-
-      bakasu:
-        description: "BakaSU"
-        required: false
-        default: true
-        type: boolean
 
       susfs:
         description: "SUSFS"
@@ -122,11 +127,11 @@ jobs:
     secrets: inherit
     with:
       oneui_targets: ${{ inputs.oneui_targets }}
+      root_provider: ${{ inputs.root_provider }}
       susfs: ${{ inputs.susfs }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
-      bakasu: ${{ inputs.bakasu }}
       droidspace: ${{ inputs.droidspace }}
       ntsync: ${{ inputs.ntsync }}
       bbrv3: ${{ inputs.bbrv3 }}
@@ -851,6 +856,7 @@ jobs:
       RELEASE_BODY: ""
       NEW_TAG: ""
       BAKASU_HASH: ""
+      FINASU_HASH: ""
       SUSFS_61: ""
       BBG_HASH: ""
       NM_HASH: ""
@@ -945,8 +951,12 @@ jobs:
          if [[ "${{ inputs.susfs }}" == "true" ]]; then
            echo "SUSFS_61=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | cut -f1)" >> $GITHUB_ENV
          fi
-         if [[ "${{ inputs.bakasu }}" == "true" ]]; then
+         if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then
            echo "BAKASU_HASH=$(git ls-remote https://github.com/Baka-SU/BakaSU.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
+         fi
+         if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "finasu" ]]; then
+           FINASU_REF=$(git ls-remote --symref https://github.com/LyraVoid/FinaSU.git HEAD | awk '/^ref:/ {print $2}')
+           echo "FINASU_HASH=$(git ls-remote https://github.com/LyraVoid/FinaSU.git "$FINASU_REF" | cut -f1)" >> $GITHUB_ENV
          fi
          if [[ "${{ inputs.bbg }}" == "true" ]]; then
            echo "BBG_HASH=$(git ls-remote https://github.com/vc-teahouse/Baseband-guard.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
@@ -957,11 +967,20 @@ jobs:
 
       - name: Set dynamic release title and body
         run: |
-          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
-            echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS" >> $GITHUB_ENV
-          else
-            echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel (Clean / Bring-Your-Own-Root)" >> $GITHUB_ENV
-          fi
+          case "${{ inputs.root_provider }}" in
+            both)
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU, FinaSU & SUSFS" >> $GITHUB_ENV
+              ;;
+            bakasu)
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS" >> $GITHUB_ENV
+              ;;
+            finasu)
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With FinaSU & SUSFS" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel (Clean / Bring-Your-Own-Root)" >> $GITHUB_ENV
+              ;;
+          esac
 
           cat << 'EOF' > release_body.md
           **IMPORTANT DISCLAIMER**
@@ -973,13 +992,21 @@ jobs:
           -> Supported ROMs - One UI 8, One UI 8.5 & One UI 9 (SM-S928B android14-6.1 GKI)
           EOF
 
-          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
+          if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then
           cat <<'EOF' >> release_body.md
           -> BakaSU - https://github.com/Baka-SU/BakaSU
           EOF
-          else
+          fi
+
+          if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "finasu" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Clean Root-Agnostic Build - No built-in root manager included (compatible with Magisk, APatch, or Official KernelSU LKM)
+          -> FinaSU - https://github.com/LyraVoid/FinaSU
+          EOF
+          fi
+
+          if [[ "${{ inputs.root_provider }}" == "clean" ]]; then
+          cat <<'EOF' >> release_body.md
+          -> Clean Root-Agnostic Build - No built-in root manager included (compatible with Magisk, APatch, or Official KernelSU / FinaSU LKM)
           EOF
           fi
 
@@ -1058,25 +1085,30 @@ jobs:
 
           echo "-> Built using LTO: ${{ inputs.lto }}" >> release_body.md
 
-          if [[ "${{ inputs.bakasu }}" != "true" ]]; then
+          if [[ "${{ inputs.root_provider }}" == "clean" ]]; then
           cat <<'EOF' >> release_body.md
 
           Installation (Bring Your Own Root):
           1. Back up your current stock boot.img.
           2. Flash the Normie-Kernel AnyKernel3 zip matching your One UI version (Oneui8, Oneui8.5, or Oneui9) first.
-          3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
+          3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU / FinaSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
           4. Once rooted, install Normie-WALT-Battery-v1.10.zip in your root manager and reboot.
           EOF
           fi
 
-          if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.susfs }}" == "true" || "${{ inputs.bbg }}" == "true" || "${{ inputs.nomount }}" == "true" ]]; then
+          if [[ "${{ inputs.root_provider }}" != "clean" || "${{ inputs.susfs }}" == "true" || "${{ inputs.bbg }}" == "true" || "${{ inputs.nomount }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
 
           Commit Hashes:
           EOF
-          if [[ "${{ inputs.bakasu }}" == "true" ]]; then
+          if [[ -n "${BAKASU_HASH}" ]]; then
           cat <<'EOF' >> release_body.md
           BakaSU: ${{ env.BAKASU_HASH }}
+          EOF
+          fi
+          if [[ -n "${FINASU_HASH}" ]]; then
+          cat <<'EOF' >> release_body.md
+          FinaSU: ${{ env.FINASU_HASH }}
           EOF
           fi
           if [[ "${{ inputs.susfs }}" == "true" ]]; then

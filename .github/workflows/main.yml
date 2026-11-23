@@ -29,7 +29,7 @@ on:
         default: all
 
       build_normie_battery:
-        description: "Build & Include Normie-WALT-Battery v1.9 ZIP (with WebUI)"
+        description: "Build & Include Normie-WALT-Battery v1.10 ZIP (with WebUI)"
         required: false
         type: boolean
         default: true
@@ -140,43 +140,85 @@ jobs:
     runs-on: ubuntu-latest
     if: inputs.build_normie_battery == true
     steps:
-      - name: Build Normie-WALT-Battery v1.9 Module ZIP (with KernelSU WebUI)
+      - name: Build Normie-WALT-Battery v1.10 Module ZIP (with KernelSU WebUI)
         run: |
           python3 - << 'PYEOF'
           import os, pathlib, zipfile
 
           workspace = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", "."))
-          mod_zip = workspace / "Normie-WALT-Battery-v1.9.zip"
+          mod_zip = workspace / "Normie-WALT-Battery-v1.10.zip"
 
           files = {
               "module.prop": (
                   "id=normie_walt_battery\n"
                   "name=Normie WALT Battery Tuner\n"
-                  "version=v1.9\n"
-                  "versionCode=10\n"
+                  "version=v1.10\n"
+                  "versionCode=110\n"
                   "author=Andromodgod\n"
-                  "description=Screen-aware 4-cluster WALT, UFS, Adreno GPU, THP madvise, VM, and wakelock tuning with interactive KernelSU WebUI for SM-S928B.\n"
+                  "description=Screen-aware 4-cluster WALT, UFS, Adreno GPU, THP madvise, VM, and wakelock tuning with hot-install, confirmed batterystats reset, status display, and interactive KernelSU WebUI for SM-S928B.\n"
               ),
-              "customize.sh": (
-                  'ui_print "- Installing Normie WALT Battery Tuner v1.9 (WebUI)"\n'
-                  'ui_print "- Target: Snapdragon 8 Gen 3 (SM-S928B / e3q)"\n'
-                  'set_perm "$MODPATH/service.sh" 0 0 0755\n'
-                  'ui_print "- Tip: Tap the WebUI button in KernelSU Manager to switch profiles & view live telemetry."\n'
-              ),
+              "customize.sh": '''#!/system/bin/sh
+          SKIPUNZIP=1
+
+          ui_print "- Installing Normie WALT Battery Tuner v1.10 (WebUI)"
+          ui_print "- Target: Snapdragon 8 Gen 3 (SM-S928B / e3q)"
+          unzip -o "$ZIPFILE" 'module.prop' 'service.sh' 'action.sh' 'webroot/*' -d "$MODPATH" >&2
+
+          set_perm_recursive "$MODPATH" 0 0 0755 0644
+          set_perm "$MODPATH/service.sh" 0 0 0755
+          set_perm "$MODPATH/action.sh" 0 0 0755
+
+          ui_print "- Hot-applying tuning profile (batterystats untouched)..."
+          sh "$MODPATH/service.sh" --hot
+          ui_print "- Hot-applied! Use the WebUI button to reset batterystats when needed."
+          ''',
+              "action.sh": '''#!/system/bin/sh
+          MODDIR=${0%/*}
+
+          echo "Hot-applying Normie WALT Battery v1.10 profile..."
+          sh "$MODDIR/service.sh" --hot
+          echo "Done."
+          ''',
               "service.sh": '''#!/system/bin/sh
           export PATH="/data/adb/ksu/bin:/system/bin:/system/xbin:/vendor/bin:$PATH"
           MODDIR=${0%/*}
           LOG="$MODDIR/walt.log"
           CONF="$MODDIR/mode.conf"
           TRIG="$MODDIR/.reload"
+          RESET_FLAG="$MODDIR/.reset_stats"
+          LAST_RESET="$MODDIR/last_stats_reset.txt"
+          PIDFILE="$MODDIR/service.pid"
+          HOT_MODE=0
 
-          until [ "$(getprop sys.boot_completed)" = "1" ]; do
-              sleep 2
-          done
-          sleep 15
+          case "$1" in
+              --hot) HOT_MODE=1 ;;
+          esac
+
+          if [ "$HOT_MODE" -eq 0 ]; then
+              until [ "$(getprop sys.boot_completed)" = "1" ]; do
+                  sleep 2
+              done
+              sleep 15
+          fi
 
           [ -f "$CONF" ] || echo "battery" > "$CONF"
-          echo "$(date '+%H:%M:%S') service.sh v1.9 started (PID $$)" > "$LOG"
+
+          reset_batterystats_now() {
+              dumpsys batterystats --reset >/dev/null 2>&1 || true
+              rm -f /data/system/batterystats-checkin.bin \
+                    /data/system/batterystats-daily.xml \
+                    /data/system/batterystats.bin 2>/dev/null || true
+              STAMP=$(date '+%Y-%m-%d %H:%M:%S')
+              printf '%s\n' "$STAMP" > "$LAST_RESET"
+              echo "$(date '+%H:%M:%S') [WebUI] Reset batterystats" >> "$LOG"
+          }
+
+          consume_reset_flag_if_present() {
+              if [ -f "$RESET_FLAG" ]; then
+                  rm -f "$RESET_FLAG"
+                  reset_batterystats_now
+              fi
+          }
 
           write_val() {
               if [ -e "$1" ]; then
@@ -334,10 +376,43 @@ jobs:
               fi
           }
 
+          apply_current_mode_once() {
+              MODE="battery"
+              [ -r "$CONF" ] && read -r MODE < "$CONF"
+              if [ "$MODE" = "stock" ]; then
+                  apply_stock_profile
+                  echo "$(date '+%H:%M:%S') Applied STOCK profile" >> "$LOG"
+              elif is_screen_on; then
+                  apply_screen_on_profile
+                  echo "$(date '+%H:%M:%S') Switched to SCREEN_ON profile" >> "$LOG"
+              else
+                  apply_screen_off_profile
+                  echo "$(date '+%H:%M:%S') Switched to SCREEN_OFF profile" >> "$LOG"
+              fi
+          }
+
+          if [ "$HOT_MODE" -eq 1 ]; then
+              echo "$(date '+%H:%M:%S') service.sh v1.10 hot-applied (PID $$)" >> "$LOG"
+              apply_current_mode_once
+              if [ -r "$PIDFILE" ]; then
+                  OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
+                  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+                      touch "$TRIG"
+                      exit 0
+                  fi
+              fi
+          else
+              echo "$(date '+%H:%M:%S') service.sh v1.10 started (PID $$)" > "$LOG"
+              apply_current_mode_once
+          fi
+
+          printf '%s\\n' "$$" > "$PIDFILE"
+
           smart_sleep() {
               secs="$1"
               i=0
               while [ "$i" -lt "$secs" ]; do
+                  consume_reset_flag_if_present
                   if [ -f "$TRIG" ]; then
                       rm -f "$TRIG"
                       return 0
@@ -349,6 +424,7 @@ jobs:
 
           LAST_STATE=""
           while true; do
+              consume_reset_flag_if_present
               MODE="battery"
               [ -r "$CONF" ] && read -r MODE < "$CONF"
 
@@ -392,7 +468,7 @@ jobs:
           <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-          <title>Normie WALT Battery Tuner</title>
+          <title>Normie WALT Battery Tuner v1.10</title>
           <style>
             :root {
               --bg: #0d1117;
@@ -404,6 +480,8 @@ jobs:
               --accent-dim: rgba(63, 185, 80, 0.16);
               --warn: #d29922;
               --warn-dim: rgba(210, 153, 34, 0.16);
+              --danger: #f85149;
+              --danger-dim: rgba(248, 81, 73, 0.14);
             }
             * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
             body {
@@ -482,6 +560,31 @@ jobs:
               border-color: var(--warn);
               color: var(--warn);
             }
+            button.btn-reset {
+              width: 100%;
+              background: var(--danger-dim);
+              border-color: rgba(248, 81, 73, 0.45);
+              color: #ff7b72;
+            }
+            .confirm-box {
+              display: none;
+              margin-top: 10px;
+              padding: 10px;
+              border-radius: 10px;
+              background: #0d1117;
+              border: 1px solid rgba(248, 81, 73, 0.4);
+            }
+            .confirm-box.show { display: block; }
+            .confirm-text {
+              font-size: 12px;
+              color: var(--text);
+              margin-bottom: 10px;
+            }
+            .btn-danger-confirm {
+              background: #da3633;
+              border-color: #f85149;
+              color: #ffffff;
+            }
             .mini-btn {
               padding: 4px 10px;
               font-size: 11px;
@@ -523,7 +626,7 @@ jobs:
           <body>
             <div class="header">
               <div>
-                <div class="title">Normie WALT Tuner</div>
+                <div class="title">Normie WALT Tuner v1.10</div>
                 <div class="subtitle" id="kver">SM-S928B • Loading kernel...</div>
               </div>
               <div class="badge" id="modeBadge">BATTERY</div>
@@ -534,6 +637,28 @@ jobs:
               <div class="btn-row">
                 <button id="btnBattery" onclick="setMode('battery')">Battery (4-Cluster)</button>
                 <button id="btnStock" onclick="setMode('stock')">Stock (Samsung)</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title">Battery Stats (Root)</div>
+              <div class="grid" style="margin-bottom: 10px;">
+                <div class="stat">
+                  <div class="stat-label">Stats Status</div>
+                  <div class="stat-val" id="valStatsStatus">Checking...</div>
+                </div>
+                <div class="stat">
+                  <div class="stat-label">Last Reset</div>
+                  <div class="stat-val" id="valLastReset">Never</div>
+                </div>
+              </div>
+              <button class="btn-reset" id="btnResetStats" onclick="toggleConfirm(true)">Reset Battery Stats Now</button>
+              <div class="confirm-box" id="confirmBox">
+                <div class="confirm-text">Clear current Android battery usage history and reset batterystats counters?</div>
+                <div class="btn-row">
+                  <button onclick="toggleConfirm(false)">Cancel</button>
+                  <button class="btn-danger-confirm" id="btnConfirmReset" onclick="resetBatteryStatsConfirmed()">Confirm Reset</button>
+                </div>
               </div>
             </div>
 
@@ -616,6 +741,12 @@ jobs:
               btnStk.className = isStock ? "active-stk" : "";
             }
 
+            function toggleConfirm(show) {
+              const box = document.getElementById("confirmBox");
+              if (show) box.classList.add("show");
+              else box.classList.remove("show");
+            }
+
             async function setMode(mode) {
               const ts = new Date().toTimeString().split(" ")[0];
               await ksuExec(
@@ -628,10 +759,28 @@ jobs:
               setTimeout(refreshAll, 1300);
             }
 
+            async function resetBatteryStatsConfirmed() {
+              toggleConfirm(false);
+              const btn = document.getElementById("btnResetStats");
+              btn.disabled = true;
+              await ksuExec(
+                "dumpsys batterystats --reset >/dev/null 2>&1 || true; " +
+                "rm -f /data/system/batterystats-checkin.bin /data/system/batterystats-daily.xml /data/system/batterystats.bin 2>/dev/null || true; " +
+                "STAMP=$(date '+%Y-%m-%d %H:%M:%S'); " +
+                "printf '%s\\n' \"$STAMP\" > " + MOD + "/last_stats_reset.txt; " +
+                "echo \"$(date '+%H:%M:%S') [WebUI] Reset batterystats\" >> " + MOD + "/walt.log"
+              );
+              toast("Battery stats reset");
+              await refreshAll();
+              btn.disabled = false;
+            }
+
             async function refreshAll() {
-              const [kver, mode, walt, thp, uclamp, gpu, ufs, wl, log] = await Promise.all([
+              const [kver, mode, statsStatus, lastReset, walt, thp, uclamp, gpu, ufs, wl, log] = await Promise.all([
                 ksuExec("uname -r"),
                 ksuExec("cat " + MOD + "/mode.conf 2>/dev/null || echo battery"),
+                ksuExec("dumpsys batterystats 2>/dev/null | grep -m 1 -E 'Start clock time|Elapsed realtime|Reset' || echo 'Active'"),
+                ksuExec("cat " + MOD + "/last_stats_reset.txt 2>/dev/null || echo Never"),
                 ksuExec("cat /proc/sys/walt/sched_upmigrate 2>/dev/null || echo N/A"),
                 ksuExec("cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo N/A"),
                 ksuExec("cat /proc/sys/kernel/sched_util_clamp_min_rt_default 2>/dev/null || echo N/A"),
@@ -643,6 +792,9 @@ jobs:
 
               if (kver.stdout) document.getElementById("kver").textContent = kver.stdout;
               renderMode(mode.stdout === "stock" ? "stock" : "battery");
+
+              document.getElementById("valStatsStatus").textContent = statsStatus.stdout || "Active";
+              document.getElementById("valLastReset").textContent = lastReset.stdout || "Never";
 
               document.getElementById("valWalt").textContent = (walt.stdout || "N/A").replace(/\\s+/g, " ");
               const thpMatch = (thp.stdout || "").match(/\\[([^\\]]+)\\]/);
@@ -673,13 +825,13 @@ jobs:
 
           print(f"Generated module zip -> {mod_zip}")
           PYEOF
-          ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.9.zip"
+          ls -lh "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.10.zip"
 
       - name: Upload Normie-WALT-Battery Artifact
         uses: actions/upload-artifact@v6
         with:
-          name: Normie-WALT-Battery-v1.9
-          path: Normie-WALT-Battery-v1.9.zip
+          name: Normie-WALT-Battery-v1.10
+          path: Normie-WALT-Battery-v1.10.zip
           compression-level: 9
 
   release:
@@ -741,7 +893,7 @@ jobs:
         if: inputs.build_normie_battery == true
         uses: actions/download-artifact@v8
         with:
-          name: Normie-WALT-Battery-v1.9
+          name: Normie-WALT-Battery-v1.10
           path: ./release-assets
 
       - name: Package Timestamped AnyKernel3 Release ZIPs
@@ -778,11 +930,11 @@ jobs:
             done
           fi
 
-          if [ -f "./release-assets/Normie-WALT-Battery-v1.9.zip" ]; then
-            cp -f "./release-assets/Normie-WALT-Battery-v1.9.zip" "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.9.zip"
+          if [ -f "./release-assets/Normie-WALT-Battery-v1.10.zip" ]; then
+            cp -f "./release-assets/Normie-WALT-Battery-v1.10.zip" "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.10.zip"
           fi
 
-          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.9.zip 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.10.zip 2>/dev/null || true
 
       - name: get commit hashes
         run: |
@@ -895,7 +1047,7 @@ jobs:
           EOF
           if [[ "${{ inputs.build_normie_battery }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Companion Module Attached - Normie-WALT-Battery-v1.9.zip included in release assets (KernelSU WebUI with live telemetry, Battery/Stock toggle, screen-aware 4-cluster WALT tuning, and wakelock filtering)
+          -> Companion Module Attached - Normie-WALT-Battery-v1.10.zip included in release assets (KernelSU WebUI with live telemetry, Battery/Stock toggle, screen-aware 4-cluster WALT tuning, confirmed batterystats reset with status display, and wakelock filtering)
           EOF
           fi
           fi
@@ -909,7 +1061,7 @@ jobs:
           1. Back up your current stock boot.img.
           2. Flash the Normie-Kernel AnyKernel3 zip matching your One UI version (Oneui8, Oneui8.5, or Oneui9) first.
           3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
-          4. Once rooted, install Normie-WALT-Battery-v1.9.zip in your root manager and reboot.
+          4. Once rooted, install Normie-WALT-Battery-v1.10.zip in your root manager and reboot.
           EOF
           fi
 
@@ -947,7 +1099,7 @@ jobs:
           prerelease: ${{ inputs.release_type == 'Pre-Release' }}
           files: |
             *-AnyKernel3-*.zip
-            ${{ inputs.build_normie_battery && 'Normie-WALT-Battery-v1.9.zip' || '' }}
+            ${{ inputs.build_normie_battery && 'Normie-WALT-Battery-v1.10.zip' || '' }}
           fail_on_unmatched_files: true
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md

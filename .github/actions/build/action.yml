@@ -20,7 +20,7 @@ runs:
         cd "$CONFIG"
         echo "Building the kernel..."
 
-        # Prepare kernel tree for Bazel sandbox (BakaSU/FinaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
+        # Prepare kernel tree for Bazel sandbox (SukiSU-Nova/BakaSU/FinaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
         KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
         if [ -d "$KERNEL_DIR" ]; then
           # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
@@ -32,13 +32,16 @@ runs:
             fi
           done
 
-          # 2. Resolve BakaSU/FinaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
+          # 2. Resolve SukiSU-Nova/BakaSU/FinaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
           KSU_REPO=""
           for repo in \
+            "$GITHUB_WORKSPACE/SukiSU-Nova" \
             "$GITHUB_WORKSPACE/FinaSU" \
+            "$KERNEL_DIR/SukiSU-Nova" \
             "$KERNEL_DIR/FinaSU" \
             "$KERNEL_DIR/BakaSU" \
             "$KERNEL_DIR/KernelSU" \
+            "$ROOT/SukiSU-Nova" \
             "$ROOT/FinaSU" \
             "$ROOT/BakaSU" \
             "$ROOT/KernelSU"; do
@@ -101,6 +104,7 @@ runs:
         targets = [
             kernel_dir / "drivers/kernelsu/Kbuild",
             kernel_dir / "KernelSU/kernel/Kbuild",
+            kernel_dir / "SukiSU-Nova/kernel/Kbuild",
             kernel_dir / "BakaSU/kernel/Kbuild",
             kernel_dir / "FinaSU/kernel/Kbuild",
         ]
@@ -111,7 +115,7 @@ runs:
             text = kbuild.read_text(encoding="utf-8", errors="ignore")
 
             text = re.sub(
-                r"\$\(error\b(?=[^\n]*(?:BakaSU|FinaSU|KernelSU|git submodule))",
+                r"\$\(error\b(?=[^\n]*(?:SukiSU-Nova|BakaSU|FinaSU|KernelSU|git submodule))",
                 "$(warning",
                 text,
             )
@@ -171,6 +175,7 @@ runs:
             kernel_dir / "fs/susfs.c",
             kernel_dir / "drivers/kernelsu/susfs.c",
             kernel_dir / "KernelSU/kernel/susfs.c",
+            kernel_dir / "SukiSU-Nova/kernel/susfs.c",
             kernel_dir / "BakaSU/kernel/susfs.c",
             kernel_dir / "FinaSU/kernel/susfs.c",
         ]

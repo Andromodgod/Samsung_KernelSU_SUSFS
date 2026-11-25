@@ -40,6 +40,12 @@ on:
           - clean
         default: both
 
+      include_managers:
+        description: "Download & Attach KSU Manager APKs to Releases"
+        required: false
+        type: boolean
+        default: true
+
       build_normie_battery:
         description: "Build & Include Normie-WALT-Battery v1.10 ZIP (with WebUI)"
         required: false
@@ -141,6 +147,72 @@ jobs:
       optimization: ${{ inputs.optimization }}
       ttl: ${{ inputs.ttl }}
       lto: ${{ inputs.lto }}
+
+  fetch-managers:
+    runs-on: ubuntu-latest
+    if: inputs.root_provider != 'clean' && inputs.include_managers == true
+    steps:
+      - name: Download KSU Manager APKs
+        env:
+          ROOT_PROVIDER: ${{ inputs.root_provider }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p manager-apks
+          cd manager-apks
+
+          fetch_repo_apk() {
+            local slug="$1"
+            local prefix="$2"
+            local json
+            json=$(curl -fsSL -H "Accept: application/vnd.github+json" ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} "https://api.github.com/repos/${slug}/releases/latest" || true)
+            if [ -z "$json" ] || ! echo "$json" | jq -e '.assets' >/dev/null 2>&1; then
+              json=$(curl -fsSL -H "Accept: application/vnd.github+json" ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} "https://api.github.com/repos/${slug}/releases" | jq '.[0] // empty')
+            fi
+            [ -n "$json" ] || { echo "No release metadata found for $slug"; return 0; }
+
+            local tag
+            tag=$(echo "$json" | jq -r '.tag_name // "latest"' | tr -cd 'A-Za-z0-9._-')
+            local found=0
+            while IFS=$'\t' read -r asset_name dl_url; do
+              [ -n "$dl_url" ] || continue
+              local safe_name="${prefix}-${tag}-${asset_name}"
+              echo "Downloading $asset_name from $slug -> $safe_name"
+              curl -fL "$dl_url" -o "$safe_name"
+              found=1
+            done < <(echo "$json" | jq -r '.assets[]? | select(.name | endswith(".apk")) | [.name, .browser_download_url] | @tsv')
+
+            [ "$found" -eq 1 ] || echo "No .apk assets found in release of $slug"
+          }
+
+          if [[ "$ROOT_PROVIDER" == "both" || "$ROOT_PROVIDER" == "sukisu-nova" ]]; then
+            fetch_repo_apk "SukiSU-Nova/SukiSU-Nova" "SukiSU-Nova"
+          fi
+          if [[ "$ROOT_PROVIDER" == "both" || "$ROOT_PROVIDER" == "bakasu" ]]; then
+            fetch_repo_apk "Baka-SU/BakaSU" "BakaSU"
+          fi
+          if [[ "$ROOT_PROVIDER" == "both" || "$ROOT_PROVIDER" == "finasu" ]]; then
+            fetch_repo_apk "LyraVoid/FinaSU" "FinaSU"
+          fi
+
+          ls -lh "$GITHUB_WORKSPACE/manager-apks" || true
+
+      - name: Check Downloaded Manager APKs
+        id: check_apks
+        run: |
+          if compgen -G "manager-apks/*.apk" >/dev/null; then
+            echo "has_apks=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_apks=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload Kernel Manager APKs Artifact
+        if: steps.check_apks.outputs.has_apks == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Kernel-Managers
+          path: manager-apks/*.apk
+          compression-level: 9
 
   build-normie-battery:
     runs-on: ubuntu-latest
@@ -850,6 +922,7 @@ jobs:
     needs:
       - build-samsung
       - build-normie-battery
+      - fetch-managers
 
     env:
       GH_TOKEN: ${{ github.token }}
@@ -908,6 +981,14 @@ jobs:
           name: Normie-WALT-Battery-v1.10
           path: ./release-assets
 
+      - name: Download Kernel Manager APKs Artifact
+        if: inputs.root_provider != 'clean' && inputs.include_managers == true
+        run: |
+          mkdir -p ./manager-release-assets
+          gh run download "${{ github.run_id }}" -n "Kernel-Managers" -D ./manager-release-assets 2>/dev/null || true
+          cp -f ./manager-release-assets/*.apk "$GITHUB_WORKSPACE/" 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE"/*.apk 2>/dev/null || true
+
       - name: Package Timestamped AnyKernel3 Release ZIPs
         run: |
           set -e
@@ -946,7 +1027,7 @@ jobs:
             cp -f "./release-assets/Normie-WALT-Battery-v1.10.zip" "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.10.zip"
           fi
 
-          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.10.zip 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.10.zip "$GITHUB_WORKSPACE"/*.apk 2>/dev/null || true
 
       - name: get commit hashes
         run: |
@@ -1098,6 +1179,12 @@ jobs:
           fi
           fi
 
+          if compgen -G "$GITHUB_WORKSPACE/*.apk" >/dev/null; then
+          cat <<'EOF' >> release_body.md
+          -> Kernel Manager APKs Attached - Matching manager APK(s) for the selected root variant(s) are included in the release assets
+          EOF
+          fi
+
           echo "-> Built using LTO: ${{ inputs.lto }}" >> release_body.md
 
           if [[ "${{ inputs.root_provider }}" == "clean" ]]; then
@@ -1156,6 +1243,7 @@ jobs:
           files: |
             *-AnyKernel3-*.zip
             ${{ inputs.build_normie_battery && 'Normie-WALT-Battery-v1.10.zip' || '' }}
-          fail_on_unmatched_files: true
+            *.apk
+          fail_on_unmatched_files: false
           name: ${{ env.RELEASE_NAME }}
           body_path: release_body.md

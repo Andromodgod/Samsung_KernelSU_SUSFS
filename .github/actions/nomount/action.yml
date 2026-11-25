@@ -1,16 +1,100 @@
 name: add nomount
-description: add and configure nomount
+description: add and configure nomount-suite hookless driver
 
 runs:
   using: composite
   steps:
-   - name: run setup script
-     shell: bash
-     run: |
-      cd "$COMMON"
-      curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+    - name: Integrate nomount-suite hookless driver
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-${GITHUB_WORKSPACE:-$PWD}/$CONFIG/kernel_platform/common}}"
+        DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
+        WORK_NM="${RUNNER_TEMP:-/tmp}/nomount-suite"
 
-   - name: add to defconfig
-     shell: bash
-     run: |
-      "$COMMON/scripts/config" --file "$GKI_DEFCONFIG" --enable CONFIG_NOMOUNT
+        rm -rf "$WORK_NM"
+        git clone --depth=1 https://github.com/bouteillepleine/nomount-suite.git "$WORK_NM"
+
+        cd "$KERNEL_ROOT"
+        rm -rf fs/nomount
+
+        PATCH_FILE=""
+        for candidate in \
+          "$WORK_NM/hookless/patches/nomount_kernel_integration.patch" \
+          "$WORK_NM/patches/nomount_kernel_integration.patch"; do
+          if [ -f "$candidate" ]; then
+            PATCH_FILE="$candidate"
+            break
+          fi
+        done
+
+        APPLIED=0
+        if [ -n "$PATCH_FILE" ]; then
+          if git apply --check "$PATCH_FILE" 2>/dev/null; then
+            git apply "$PATCH_FILE"
+            APPLIED=1
+          elif patch -p1 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 < "$PATCH_FILE"
+            APPLIED=1
+          fi
+        fi
+
+        if [ "$APPLIED" -eq 0 ]; then
+          SRC_DIR=""
+          for sdir in \
+            "$WORK_NM/hookless/src" \
+            "$WORK_NM/hookless"; do
+            if [ -d "$sdir" ]; then
+              SRC_DIR="$sdir"
+              break
+            fi
+          done
+          [ -n "$SRC_DIR" ] || { echo "::error::Could not find nomount-suite hookless driver files"; exit 1; }
+
+          mkdir -p fs/nomount
+          cp -a "$SRC_DIR/." "fs/nomount/"
+
+          if [ ! -f "fs/nomount/Makefile" ]; then
+            cat > "fs/nomount/Makefile" << 'EOF'
+        obj-$(CONFIG_NOMOUNT) += nomount.o
+        EOF
+          fi
+
+          if [ ! -f "fs/nomount/Kconfig" ]; then
+            cat > "fs/nomount/Kconfig" << 'EOF'
+        config NOMOUNT
+        	tristate "NoMount hookless path/mount hiding driver"
+        	default n
+        	help
+        	  Enables the hookless NoMount driver for module path and mount hiding.
+        EOF
+          fi
+
+          if [ -f "fs/Makefile" ] && ! grep -q "nomount" "fs/Makefile"; then
+            echo 'obj-$(CONFIG_NOMOUNT) += nomount/' >> "fs/Makefile"
+          fi
+          if [ -f "fs/Kconfig" ] && ! grep -q "fs/nomount/Kconfig" "fs/Kconfig"; then
+            sed -i '/endmenu/i source "fs/nomount/Kconfig"' "fs/Kconfig"
+          fi
+        fi
+
+        if [ -L "fs/nomount" ]; then
+          TARGET=$(readlink -f "fs/nomount")
+          rm -f "fs/nomount"
+          cp -r "$TARGET" "fs/nomount"
+        fi
+
+        rm -rf "$WORK_NM"
+
+    - name: Add CONFIG_NOMOUNT to defconfig
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-${GITHUB_WORKSPACE:-$PWD}/$CONFIG/kernel_platform/common}}"
+        DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
+
+        if [ -f "$KERNEL_ROOT/scripts/config" ] && [ -f "$DEFCONFIG" ]; then
+          "$KERNEL_ROOT/scripts/config" --file "$DEFCONFIG" --enable CONFIG_NOMOUNT
+        elif [ -f "$DEFCONFIG" ]; then
+          grep -q "^CONFIG_NOMOUNT=" "$DEFCONFIG" && sed -i 's/^CONFIG_NOMOUNT=.*/CONFIG_NOMOUNT=y/' "$DEFCONFIG" || echo "CONFIG_NOMOUNT=y" >> "$DEFCONFIG"
+        fi

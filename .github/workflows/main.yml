@@ -34,6 +34,7 @@ on:
         type: choice
         options:
           - both
+          - sukisu-nova
           - bakasu
           - finasu
           - clean
@@ -855,6 +856,7 @@ jobs:
       RELEASE_NAME: ""
       RELEASE_BODY: ""
       NEW_TAG: ""
+      SUKISU_HASH: ""
       BAKASU_HASH: ""
       FINASU_HASH: ""
       SUSFS_61: ""
@@ -951,6 +953,10 @@ jobs:
          if [[ "${{ inputs.susfs }}" == "true" ]]; then
            echo "SUSFS_61=$(git ls-remote https://gitlab.com/simonpunk/susfs4ksu.git refs/heads/gki-android14-6.1 | cut -f1)" >> $GITHUB_ENV
          fi
+         if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "sukisu-nova" ]]; then
+           SUKISU_REF=$(git ls-remote --symref https://github.com/SukiSU-Nova/SukiSU-Nova.git HEAD | awk '/^ref:/ {print $2}')
+           echo "SUKISU_HASH=$(git ls-remote https://github.com/SukiSU-Nova/SukiSU-Nova.git "${SUKISU_REF:-HEAD}" | cut -f1)" >> $GITHUB_ENV
+         fi
          if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then
            echo "BAKASU_HASH=$(git ls-remote https://github.com/Baka-SU/BakaSU.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
          fi
@@ -969,7 +975,10 @@ jobs:
         run: |
           case "${{ inputs.root_provider }}" in
             both)
-              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU, FinaSU & SUSFS" >> $GITHUB_ENV
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With SukiSU-Nova, BakaSU, FinaSU & SUSFS" >> $GITHUB_ENV
+              ;;
+            sukisu-nova)
+              echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With SukiSU-Nova & SUSFS" >> $GITHUB_ENV
               ;;
             bakasu)
               echo "RELEASE_NAME=Samsung SM-S928B Normie-Kernel With BakaSU & SUSFS" >> $GITHUB_ENV
@@ -992,6 +1001,12 @@ jobs:
           -> Supported ROMs - One UI 8, One UI 8.5 & One UI 9 (SM-S928B android14-6.1 GKI)
           EOF
 
+          if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "sukisu-nova" ]]; then
+          cat <<'EOF' >> release_body.md
+          -> SukiSU-Nova - https://github.com/SukiSU-Nova/SukiSU-Nova
+          EOF
+          fi
+
           if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then
           cat <<'EOF' >> release_body.md
           -> BakaSU - https://github.com/Baka-SU/BakaSU
@@ -1006,7 +1021,7 @@ jobs:
 
           if [[ "${{ inputs.root_provider }}" == "clean" ]]; then
           cat <<'EOF' >> release_body.md
-          -> Clean Root-Agnostic Build - No built-in root manager included (compatible with Magisk, APatch, or Official KernelSU / FinaSU LKM)
+          -> Clean Root-Agnostic Build - No built-in root manager included (compatible with Magisk, APatch, or Official KernelSU / SukiSU-Nova / FinaSU LKM)
           EOF
           fi
 
@@ -1091,7 +1106,7 @@ jobs:
           Installation (Bring Your Own Root):
           1. Back up your current stock boot.img.
           2. Flash the Normie-Kernel AnyKernel3 zip matching your One UI version (Oneui8, Oneui8.5, or Oneui9) first.
-          3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU / FinaSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
+          3. Dump/extract the updated boot.img and patch it using Magisk, APatch, or Official KernelSU / SukiSU-Nova / FinaSU Manager (LKM mode), then flash the patched boot.img back. (Note: Flashing AnyKernel3 replaces the kernel Image inside boot.img, so always patch boot.img after flashing the kernel zip.)
           4. Once rooted, install Normie-WALT-Battery-v1.10.zip in your root manager and reboot.
           EOF
           fi
@@ -1101,6 +1116,11 @@ jobs:
 
           Commit Hashes:
           EOF
+          if [[ -n "${SUKISU_HASH}" ]]; then
+          cat <<'EOF' >> release_body.md
+          SukiSU-Nova: ${{ env.SUKISU_HASH }}
+          EOF
+          fi
           if [[ -n "${BAKASU_HASH}" ]]; then
           cat <<'EOF' >> release_body.md
           BakaSU: ${{ env.BAKASU_HASH }}

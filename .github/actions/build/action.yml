@@ -56,7 +56,7 @@ runs:
             KSU_COUNT=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "4582")
             KSU_VER="${KSU_VERSION_OVERRIDE:-$KSU_COUNT}"
             if [ "$KSU_VER" -lt 35281 ]; then
-              KSU_VER=$((KSU_VER + 30699))
+              KSU_VER=$((KSU_VER + 31273))
             fi
           else
             KSU_VER="${KSU_VERSION_OVERRIDE:-35281}"
@@ -291,13 +291,6 @@ runs:
             "CONFIG_WIREGUARD=y",
         ]
 
-        if root_provider == "sukisu-nova":
-            base_config_lines += [
-                "CONFIG_KPM=y",
-                "CONFIG_KALLSYMS=y",
-                "CONFIG_KALLSYMS_ALL=y",
-            ]
-
         if lto_mode == "full":
             base_config_lines += [
                 "CONFIG_LTO_CLANG=y",
@@ -330,6 +323,7 @@ runs:
         ]
 
         extra_strip_keys = {
+            "CONFIG_KPM",
             "CONFIG_DEFAULT_CUBIC",
             "CONFIG_DEFAULT_RENO",
             "CONFIG_DEFAULT_PFIFO_FAST",
@@ -394,14 +388,19 @@ runs:
                 p for p in (
                     root / "drivers/kernelsu/Kconfig",
                     root / "SukiSU-Nova/kernel/Kconfig",
+                    root / "KernelSU/kernel/Kconfig",
                 )
                 if p.is_file()
             ]
             if ksu_kcs:
                 ktxt = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ksu_kcs)
                 config_lines.append("CONFIG_KSU=y")
-                if root_provider == "sukisu-nova" and re.search(r"^\s*config\s+KSU_SUSFS\b", ktxt, flags=re.MULTILINE):
-                    config_lines.append("CONFIG_KSU_SUSFS=y")
+                if root_provider == "sukisu-nova":
+                    if re.search(r"^\s*config\s+KPM\b", ktxt, flags=re.MULTILINE):
+                        config_lines.append("CONFIG_KPM=y")
+                        config_lines += ["CONFIG_KALLSYMS=y", "CONFIG_KALLSYMS_ALL=y"]
+                    if re.search(r"^\s*config\s+KSU_SUSFS\b", ktxt, flags=re.MULTILINE):
+                        config_lines.append("CONFIG_KSU_SUSFS=y")
                 for sym in susfs_candidate_syms:
                     if re.search(rf"^\s*config\s+{sym}\b", ktxt, flags=re.MULTILINE):
                         config_lines.append(f"CONFIG_{sym}=y")

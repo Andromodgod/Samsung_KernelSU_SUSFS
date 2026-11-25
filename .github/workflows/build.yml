@@ -303,8 +303,6 @@ jobs:
 
           cd "$KERNEL_ROOT"
           rm -rf drivers/kernelsu KernelSU BakaSU FinaSU SukiSU-Nova "$GITHUB_WORKSPACE/FinaSU"
-          # Kernel and manager must come from the same release. Use FINASU_REF if set (a tag, or "master"
-          # to track development), otherwise the latest published release.
           REF="${FINASU_REF:-}"
           if [ -z "$REF" ]; then
             REF=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
@@ -365,21 +363,16 @@ jobs:
           R="$GITHUB_WORKSPACE/FinaSU"
           [ -f "$KB" ] || { echo "::error::$KB not found"; exit 1; }
 
-          # 1) Version: Kbuild falls back to 16 / v0.0.0-00000000@unknown when it cannot see FinaSU's git
-          #    history (the copy lives inside the kernel repo). Compute the real values from the checkout.
           if [ -f "$R/.git/shallow" ]; then git -C "$R" fetch --unshallow --tags 2>/dev/null || true; fi
           COUNT=$(git -C "$R" rev-list --count HEAD)
           SHA=$(git -C "$R" rev-parse --short=8 HEAD)
           TAG=$(git -C "$R" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
-          BRANCH=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+          FINASU_BRANCH=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
           VER=$((30000 + COUNT))
           sed -i -E "s/-DKSU_VERSION=16/-DKSU_VERSION=${VER}/" "$KB"
-          sed -i -E "s|^KSU_VERSION_FULL := v0\.0\.0-00000000@unknown|KSU_VERSION_FULL := v${TAG:-unknown}-${SHA}@${BRANCH}|" "$KB"
-          echo "FinaSU version set to ${VER} (v${TAG:-unknown}-${SHA}@${BRANCH})"
+          sed -i -E "s|^KSU_VERSION_FULL := v0\.0\.0-00000000@unknown|KSU_VERSION_FULL := v${TAG:-unknown}-${SHA}@${FINASU_BRANCH}|" "$KB"
+          echo "FinaSU version set to ${VER} (v${TAG:-unknown}-${SHA}@${FINASU_BRANCH})"
 
-          # 2) Manager signature: the kernel only trusts a manager APK whose signing certificate matches
-          #    KSU_EXPECTED_SIZE/HASH. Read them straight from the release APK. The repo variables
-          #    FINASU_SIG_SIZE and FINASU_SIG_HASH, if both set, override this (e.g. for your own re-signed manager).
           if [ -n "${SIG_SIZE_OVERRIDE:-}" ] && [ -n "${SIG_HASH_OVERRIDE:-}" ]; then
             SIG_SIZE="$SIG_SIZE_OVERRIDE"; SIG_HASH="$SIG_HASH_OVERRIDE"
             echo "Using manager signature from repository variables"
@@ -406,16 +399,16 @@ jobs:
               cd_off = u32(d, i + 16)
               if d[cd_off - 16:cd_off] != b"APK Sig Block 42": raise SystemExit("no APK signing block (v1-only APK?)")
               size = u64(d, cd_off - 24)
-              return d[cd_off - size - 8: cd_off - 24]  # id-value pairs region (after leading size field)
+              return d[cd_off - size - 8: cd_off - 24]
 
           def pairs(blk):
-              o = 8  # skip leading size field
+              o = 8
               while o + 12 <= len(blk):
                   n = u64(blk, o); pid = u32(blk, o + 8)
                   yield pid, blk[o + 12: o + 8 + n]
                   o += 8 + n
 
-          def lp(b, o):  # length-prefixed -> (data, next_offset)
+          def lp(b, o):
               n = u32(b, o); return b[o + 4:o + 4 + n], o + 4 + n
 
           d = open(sys.argv[1], "rb").read()
@@ -500,6 +493,9 @@ jobs:
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+              fi
+              if [[ "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
+                grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
               fi
             fi
           fi
@@ -605,7 +601,7 @@ jobs:
           fi
           CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
           if [ -n "$CFG" ]; then
-            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL not found in $CFG"
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_KPM=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/KPM not found in $CFG"
             grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
           fi
 

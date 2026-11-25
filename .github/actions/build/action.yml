@@ -1,539 +1,678 @@
 name: build kernel
 description: each samsung kernel has its own way of building the kernel, they are sorted here.
 inputs:
- ccache:
-  description: 'build with ccache'
-  required: true
- build_type:
-  description: 'make or bazel'
-  required: true
+  ccache:
+    description: 'build with ccache'
+    required: true
+  build_type:
+    description: 'make or bazel'
+    required: true
 
 runs:
- using: composite
- steps:
-  - name: start bazel build
-    if: inputs.build_type == 'Bazel'
-    shell: bash
-    run: |
-     set -e
-     set -x
-     cd "$CONFIG"
-     echo "Building the kernel..."
+  using: composite
+  steps:
+    - name: start bazel build
+      if: inputs.build_type == 'Bazel'
+      shell: bash
+      run: |
+        set -e
+        set -x
+        cd "$CONFIG"
+        echo "Building the kernel..."
 
-     # Prepare kernel tree for Bazel sandbox (BakaSU, symlinks, optimizations, stealth, and Normie-Kernel branding)
-     KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
-     if [ -d "$KERNEL_DIR" ]; then
-      # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
-      for link in drivers/kernelsu fs/nomount security/baseband-guard; do
-       if [ -L "$KERNEL_DIR/$link" ]; then
-        TARGET=$(readlink -f "$KERNEL_DIR/$link")
-        rm -f "$KERNEL_DIR/$link"
-        cp -r "$TARGET" "$KERNEL_DIR/$link"
-       fi
-      done
+        # Prepare kernel tree for Bazel sandbox (BakaSU/FinaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
+        KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
+        if [ -d "$KERNEL_DIR" ]; then
+          # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
+          for link in drivers/kernelsu fs/nomount security/baseband-guard; do
+            if [ -L "$KERNEL_DIR/$link" ]; then
+              TARGET=$(readlink -f "$KERNEL_DIR/$link")
+              rm -f "$KERNEL_DIR/$link"
+              cp -r "$TARGET" "$KERNEL_DIR/$link"
+            fi
+          done
 
-      # 2. Resolve BakaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
-      KSU_REPO=""
-      for repo in "$KERNEL_DIR/BakaSU" "$KERNEL_DIR/KernelSU" "$ROOT/BakaSU" "$ROOT/KernelSU"; do
-       if [ -d "$repo/.git" ]; then
-        KSU_REPO="$repo"
-        break
-       fi
-      done
-      if [ -n "$KSU_REPO" ]; then
-       KSU_VER=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "12000")
-      else
-       KSU_VER="12000"
-      fi
-      echo "Resolved BakaSU KSU_VERSION=$KSU_VER"
+          # 2. Resolve BakaSU/FinaSU/KernelSU commit count and replace broken UAPI symlinks with real headers
+          KSU_REPO=""
+          for repo in \
+            "$GITHUB_WORKSPACE/FinaSU" \
+            "$KERNEL_DIR/FinaSU" \
+            "$KERNEL_DIR/BakaSU" \
+            "$KERNEL_DIR/KernelSU" \
+            "$ROOT/FinaSU" \
+            "$ROOT/BakaSU" \
+            "$ROOT/KernelSU"; do
+            if [ -d "$repo/.git" ]; then
+              KSU_REPO="$repo"
+              break
+            fi
+          done
+          if [ -n "$KSU_REPO" ]; then
+            if [ -f "$KSU_REPO/.git/shallow" ]; then
+              git -C "$KSU_REPO" fetch --unshallow 2>/dev/null || true
+            fi
+            KSU_COUNT=$(git -C "$KSU_REPO" rev-list --count HEAD 2>/dev/null || echo "4582")
+            KSU_VER="${KSU_VERSION_OVERRIDE:-$KSU_COUNT}"
+            if [ "$KSU_VER" -lt 35281 ]; then
+              KSU_VER=$((KSU_VER + 30699))
+            fi
+          else
+            KSU_VER="${KSU_VERSION_OVERRIDE:-35281}"
+          fi
+          echo "Resolved KSU_VERSION=$KSU_VER (repo: ${KSU_REPO:-none})"
 
-      UAPI_SRC=""
-      for candidate in \
-       "$KSU_REPO/uapi" \
-       "$KSU_REPO/kernel/include/uapi" \
-       "$KSU_REPO/kernel/uapi" \
-       "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
-       "$KERNEL_DIR/drivers/kernelsu/uapi"; do
-       if [ -d "$candidate" ]; then
-        UAPI_SRC=$(readlink -f "$candidate")
-        break
-       fi
-      done
+          UAPI_SRC=""
+          for candidate in \
+            "$KSU_REPO/uapi" \
+            "$KSU_REPO/kernel/include/uapi" \
+            "$KSU_REPO/kernel/uapi" \
+            "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+            "$KERNEL_DIR/drivers/kernelsu/uapi"; do
+            if [ -d "$candidate" ]; then
+              UAPI_SRC=$(readlink -f "$candidate")
+              break
+            fi
+          done
 
-      if [ -n "$UAPI_SRC" ] && [ -d "$UAPI_SRC" ]; then
-       echo "Materializing UAPI headers from $UAPI_SRC"
-       for dest in \
-        "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
-        "$KERNEL_DIR/drivers/kernelsu/uapi" \
-        "$KERNEL_DIR/drivers/kernelsu/preinit/runner/uapi"; do
-        if [ -d "$(dirname "$dest")" ]; then
-         if [ -L "$dest" ]; then
-          rm -f "$dest"
-         fi
-         mkdir -p "$dest"
-         cp -rfL "$UAPI_SRC/." "$dest/"
+          if [ -n "$UAPI_SRC" ] && [ -d "$UAPI_SRC" ]; then
+            echo "Materializing UAPI headers from $UAPI_SRC"
+            for dest in \
+              "$KERNEL_DIR/drivers/kernelsu/include/uapi" \
+              "$KERNEL_DIR/drivers/kernelsu/uapi" \
+              "$KERNEL_DIR/drivers/kernelsu/preinit/runner/uapi"; do
+              if [ -d "$(dirname "$dest")" ]; then
+                if [ -L "$dest" ]; then
+                  rm -f "$dest"
+                fi
+                mkdir -p "$dest"
+                cp -rfL "$UAPI_SRC/." "$dest/"
+              fi
+            done
+          fi
+
+          # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I only into C compiler commands for runner
+          python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
+        import pathlib, re, sys
+
+        kernel_dir = pathlib.Path(sys.argv[1])
+        ksu_ver = sys.argv[2]
+        inc_flags = "-I$(srctree)/drivers/kernelsu -I$(srctree)/drivers/kernelsu/include"
+
+        targets = [
+            kernel_dir / "drivers/kernelsu/Kbuild",
+            kernel_dir / "KernelSU/kernel/Kbuild",
+            kernel_dir / "BakaSU/kernel/Kbuild",
+            kernel_dir / "FinaSU/kernel/Kbuild",
+        ]
+
+        for kbuild in targets:
+            if not kbuild.is_file():
+                continue
+            text = kbuild.read_text(encoding="utf-8", errors="ignore")
+
+            text = re.sub(
+                r"\$\(error\b(?=[^\n]*(?:BakaSU|FinaSU|KernelSU|git submodule))",
+                "$(warning",
+                text,
+            )
+            text = re.sub(
+                r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
+                "KSU_SRC := $(srctree)/drivers/kernelsu",
+                text,
+                flags=re.MULTILINE,
+            )
+            text = re.sub(
+                r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
+                f"KSU_VERSION := {ksu_ver}",
+                text,
+                flags=re.MULTILINE,
+            )
+
+            header = (
+                "KSU_SRC := $(srctree)/drivers/kernelsu\n"
+                f"KSU_VERSION := {ksu_ver}\n"
+                f"KSU_EXTRA_INC := {inc_flags}\n"
+            )
+
+            patched_lines = []
+            in_runner_rule = False
+            cc_pattern = re.compile(r"(\$\(CC\)|\$\(HOSTCC\)|\bclang\b|\bgcc\b)")
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not line.startswith("\t"):
+                    if re.match(r"^(?:quiet_)?cmd_.*runner.*=", stripped):
+                        if "$(KSU_EXTRA_INC)" not in line and cc_pattern.search(line) and (".c" in line or " -c " in line):
+                            line = cc_pattern.sub(r"\1 $(KSU_EXTRA_INC)", line, count=1)
+                        in_runner_rule = line.endswith("\\")
+                    elif ":" in line and not stripped.startswith("#") and "=" not in line.split(":", 1)[0]:
+                        target_part = line.split(":", 1)[0]
+                        in_runner_rule = "runner" in target_part
+                    elif not line.endswith("\\"):
+                        in_runner_rule = False
+                elif in_runner_rule and "$(KSU_EXTRA_INC)" not in line:
+                    if cc_pattern.search(line) and (".c" in line or " -c " in line):
+                        line = cc_pattern.sub(r"\1 $(KSU_EXTRA_INC)", line, count=1)
+                patched_lines.append(line)
+
+            footer = (
+                "\nccflags-y += $(KSU_EXTRA_INC)\n"
+                "subdir-ccflags-y += $(KSU_EXTRA_INC)\n"
+            )
+            kbuild.write_text(header + "\n".join(patched_lines) + footer, encoding="utf-8")
+            print(f"Patched {kbuild}")
+        PYEOF
+
+          # 3b. Set default SUSFS runtime logging to false at boot without needing a service.d script
+          python3 - "$KERNEL_DIR" << 'PYEOF'
+        import pathlib, sys
+
+        kernel_dir = pathlib.Path(sys.argv[1])
+        susfs_sources = [
+            kernel_dir / "fs/susfs.c",
+            kernel_dir / "drivers/kernelsu/susfs.c",
+            kernel_dir / "KernelSU/kernel/susfs.c",
+            kernel_dir / "BakaSU/kernel/susfs.c",
+            kernel_dir / "FinaSU/kernel/susfs.c",
+        ]
+
+        patched = False
+        for src in susfs_sources:
+            if not src.is_file():
+                continue
+            txt = src.read_text(encoding="utf-8", errors="ignore")
+            new_txt = txt.replace(
+                "bool susfs_is_log_enabled __read_mostly = true;",
+                "bool susfs_is_log_enabled __read_mostly = false;",
+            ).replace(
+                "bool susfs_is_log_enabled = true;",
+                "bool susfs_is_log_enabled = false;",
+            )
+            if new_txt != txt:
+                src.write_text(new_txt, encoding="utf-8")
+                print(f"Disabled default SUSFS log in {src}")
+                patched = True
+
+        if not patched:
+            print("Note: susfs_is_log_enabled initializer not found or already false")
+        PYEOF
+
+          # 4. Apply KMI-safe battery life optimizations, drivers, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
+          EFFECTIVE_LTO="$BUILD_LTO"
+          if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
+            EFFECTIVE_LTO="full"
+          fi
+
+          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" << 'PYEOF'
+        import os, pathlib, re, sys
+
+        roots = []
+        seen_real = set()
+        for raw in (sys.argv[1], sys.argv[2]):
+            p = pathlib.Path(raw)
+            if p.is_dir():
+                real = os.path.realpath(p)
+                if real not in seen_real:
+                    seen_real.add(real)
+                    roots.append(p)
+
+        lto_mode = sys.argv[3]
+        kp_dir = pathlib.Path(sys.argv[4])
+
+        base_config_lines = [
+            'CONFIG_LOCALVERSION="-Normie-Kernel"',
+            # 100Hz battery-optimized kernel timer + tickless idle (reduces periodic CPU wakeups)
+            "CONFIG_HZ_100=y",
+            "# CONFIG_HZ_250 is not set",
+            "# CONFIG_HZ_300 is not set",
+            "# CONFIG_HZ_1000 is not set",
+            "CONFIG_HZ=100",
+            "CONFIG_NO_HZ_IDLE=y",
+            # Battery, CPUIdle, Lazy RCU & Deep Sleep Optimizations (KMI-safe)
+            "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
+            "CONFIG_RCU_NOCB_CPU=y",
+            "CONFIG_RCU_LAZY=y",
+            "# CONFIG_RCU_LAZY_DEFAULT_OFF is not set",
+            "CONFIG_SUSPEND_SKIP_SYNC=y",
+            "CONFIG_PM_AUTOSLEEP=y",
+            "CONFIG_PM_WAKELOCKS=y",
+            "CONFIG_ENERGY_MODEL=y",
+            "CONFIG_CPU_IDLE_GOV_TEO=y",
+            "CONFIG_ARM_PSCI_CPUIDLE=y",
+            "CONFIG_ARM_PSCI_CPUIDLE_DOMAIN=y",
+            # MGLRU active at boot + THP madvise (reduces kswapd & khugepaged wakeups)
+            "CONFIG_LRU_GEN=y",
+            "CONFIG_LRU_GEN_ENABLED=y",
+            "# CONFIG_LRU_GEN_STATS is not set",
+            "CONFIG_TRANSPARENT_HUGEPAGE=y",
+            "# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set",
+            "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y",
+            # Zstd crypto & F2FS Zstd/LZ4 compression
+            "CONFIG_CRYPTO_ZSTD=y",
+            "CONFIG_F2FS_FS_COMPRESSION=y",
+            "CONFIG_F2FS_FS_ZSTD=y",
+            "CONFIG_F2FS_FS_LZ4=y",
+            "CONFIG_F2FS_FS_LZ4HC=y",
+            # Built-in controller drivers
+            "CONFIG_INPUT_JOYDEV=y",
+            "CONFIG_INPUT_JOYSTICK=y",
+            "CONFIG_JOYSTICK_XPAD=y",
+            "CONFIG_JOYSTICK_XPAD_FF=y",
+            "CONFIG_JOYSTICK_XPAD_LEDS=y",
+            "CONFIG_HID_PLAYSTATION=y",
+            "CONFIG_PLAYSTATION_FF=y",
+            "CONFIG_HID_NINTENDO=y",
+            "CONFIG_NINTENDO_FF=y",
+            "CONFIG_HID_SONY=y",
+            "CONFIG_SONY_FF=y",
+            "CONFIG_HID_MICROSOFT=y",
+            "CONFIG_HID_STEAM=y",
+            # USB Gadget HID & Mass Storage
+            "CONFIG_USB_CONFIGFS_F_HID=y",
+            "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
+            # Default BBRv3 + FQ pacing (faster transfer completion = faster modem race-to-idle) + WireGuard
+            "CONFIG_TCP_CONG_ADVANCED=y",
+            "# CONFIG_TCP_CONG_BIC is not set",
+            "# CONFIG_TCP_CONG_WESTWOOD is not set",
+            "# CONFIG_TCP_CONG_HTCP is not set",
+            "CONFIG_TCP_CONG_BBR=y",
+            "CONFIG_DEFAULT_BBR=y",
+            'CONFIG_DEFAULT_TCP_CONG="bbr"',
+            "CONFIG_NET_SCHED=y",
+            "CONFIG_NET_SCH_CAKE=y",
+            "CONFIG_NET_SCH_FQ=y",
+            "CONFIG_NET_SCH_DEFAULT=y",
+            "CONFIG_DEFAULT_FQ=y",
+            'CONFIG_DEFAULT_NET_SCH="fq"',
+            "CONFIG_WIREGUARD=y",
+        ]
+
+        if lto_mode == "full":
+            base_config_lines += [
+                "CONFIG_LTO_CLANG=y",
+                "# CONFIG_LTO_NONE is not set",
+                "# CONFIG_LTO_CLANG_THIN is not set",
+                "CONFIG_LTO_CLANG_FULL=y",
+            ]
+        elif lto_mode == "thin":
+            base_config_lines += [
+                "CONFIG_LTO_CLANG=y",
+                "# CONFIG_LTO_NONE is not set",
+                "# CONFIG_LTO_CLANG_FULL is not set",
+                "CONFIG_LTO_CLANG_THIN=y",
+            ]
+
+        susfs_candidate_syms = [
+            "KSU_SUSFS",
+            "KSU_SUSFS_SUS_PATH",
+            "KSU_SUSFS_SUS_MOUNT",
+            "KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT",
+            "KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT",
+            "KSU_SUSFS_TRY_UMOUNT",
+            "KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT",
+            "KSU_SUSFS_SPOOF_UNAME",
+            "KSU_SUSFS_ENABLE_LOG",
+            "KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS",
+            "KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG",
+            "KSU_SUSFS_OPEN_REDIRECT",
+            "KSU_SUSFS_SUS_MAP",
+        ]
+
+        extra_strip_keys = {
+            "CONFIG_DEFAULT_CUBIC",
+            "CONFIG_DEFAULT_RENO",
+            "CONFIG_DEFAULT_PFIFO_FAST",
+            "CONFIG_DEFAULT_FQ_CODEL",
+            "CONFIG_DEFAULT_CODEL",
+            "CONFIG_DEFAULT_SFQ",
+            "CONFIG_DEFAULT_CAKE",
+            "CONFIG_ZRAM_MULTI_COMP",
+            "CONFIG_ZRAM_DEF_COMP_LZORLE",
+            "CONFIG_ZRAM_DEF_COMP_LZO",
+            "CONFIG_ZRAM_DEF_COMP_LZ4",
+            "CONFIG_ZRAM_DEF_COMP_LZ4HC",
+            "CONFIG_ZRAM_DEF_COMP_842",
+            "CONFIG_ZRAM_DEF_COMP_ZSTD",
+            "CONFIG_ZRAM_DEF_COMP",
+            "CONFIG_ZSTD_COMPRESS",
+            "CONFIG_ZSTD_DECOMPRESS",
+            "CONFIG_INPUT_FF_MEMLESS",
+            "CONFIG_USB_F_MASS_STORAGE",
+        }
+
+        builtin_kos = (
+            "joydev.ko",
+            "xpad.ko",
+            "hid-playstation.ko",
+            "hid-nintendo.ko",
+            "hid-sony.ko",
+            "hid-microsoft.ko",
+            "hid-steam.ko",
+            "wireguard.ko",
+            "sch_cake.ko",
+            "sch_fq.ko",
+            "tcp_bbr.ko",
+        )
+
+        # 32ms stock PELT half-life prevents micro-burst background wakeups from boosting Cortex-X4 prime core
+        halflife = 32
+        y = 0.5 ** (1.0 / halflife)
+        inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
+        sum_vals = []
+        acc = 0
+        for i in range(32):
+            acc += int(1024 * (y ** (i + 1)))
+            sum_vals.append(acc)
+        load_avg_max = sum(int(1024 * (y ** i)) for i in range(1, 500)) + 1024
+
+        inv_block = "static const u32 runnable_avg_yN_inv[] = {\n"
+        for row in range(0, 32, 4):
+            inv_block += "\t" + ", ".join(f"0x{v:08x}" for v in inv_vals[row:row + 4]) + ",\n"
+        inv_block += "};"
+
+        sum_block = "static const u32 runnable_avg_yN_sum[] = {\n"
+        for row in range(0, 32, 8):
+            sum_block += "\t" + ", ".join(f"{v:5d}" for v in sum_vals[row:row + 8]) + ",\n"
+        sum_block += "};"
+
+        for root in roots:
+            print(f"Configuring kernel tree: {root}")
+            config_lines = list(base_config_lines)
+
+            # Only inject KSU and SUSFS symbols into kernel trees containing drivers/kernelsu/Kconfig (common, not msm-kernel)
+            ksu_kc = root / "drivers/kernelsu/Kconfig"
+            if ksu_kc.is_file():
+                ktxt = ksu_kc.read_text(encoding="utf-8", errors="ignore")
+                config_lines.append("CONFIG_KSU=y")
+                for sym in susfs_candidate_syms:
+                    if re.search(rf"^\s*config\s+{sym}\b", ktxt, flags=re.MULTILINE):
+                        config_lines.append(f"CONFIG_{sym}=y")
+
+            zram_kc = root / "drivers/block/zram/Kconfig"
+            if zram_kc.is_file():
+                ztxt = zram_kc.read_text(encoding="utf-8", errors="ignore")
+                if re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", ztxt, flags=re.MULTILINE):
+                    config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
+                if re.search(r"^\s*config\s+ZRAM_DEF_COMP_ZSTD\b", ztxt, flags=re.MULTILINE):
+                    config_lines.append("CONFIG_ZRAM_DEF_COMP_ZSTD=y")
+                    config_lines.append('CONFIG_ZRAM_DEF_COMP="zstd"')
+
+            managed_keys = set(extra_strip_keys)
+            for line in config_lines:
+                m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", line)
+                if m:
+                    managed_keys.add(m.group(1))
+
+            def strip_managed(text: str) -> str:
+                out = []
+                for ln in text.splitlines():
+                    m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", ln.strip())
+                    if m and m.group(1) in managed_keys:
+                        continue
+                    out.append(ln)
+                return "\n".join(out) + "\n"
+
+            gki_cfg = root / "arch/arm64/configs/gki_defconfig"
+            if gki_cfg.is_file():
+                cleaned = strip_managed(gki_cfg.read_text(encoding="utf-8", errors="ignore"))
+                gki_cfg.write_text(cleaned + "\n# Normie-Kernel additions\n" + "\n".join(config_lines) + "\n", encoding="utf-8")
+
+            cfg_dir = root / "arch/arm64/configs"
+            if cfg_dir.is_dir():
+                for frag in cfg_dir.rglob("*.config"):
+                    ftxt = frag.read_text(encoding="utf-8", errors="ignore")
+                    if any(k in ftxt for k in managed_keys):
+                        frag.write_text(strip_managed(ftxt), encoding="utf-8")
+                for sec_cfg in cfg_dir.rglob("*_defconfig"):
+                    if sec_cfg != gki_cfg:
+                        stxt = sec_cfg.read_text(encoding="utf-8", errors="ignore")
+                        if any(k in stxt for k in managed_keys):
+                            sec_cfg.write_text(strip_managed(stxt), encoding="utf-8")
+
+            for bzl in root.glob("**/modules.bzl"):
+                btxt = bzl.read_text(encoding="utf-8", errors="ignore")
+                new_lines = [ln for ln in btxt.splitlines() if not any(ln.strip().endswith(ko + '",') or ln.strip().endswith(ko + '"') for ko in builtin_kos)]
+                if len(new_lines) != len(btxt.splitlines()):
+                    bzl.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                    print(f"Updated {bzl} for built-in modules")
+
+            pelt_h = root / "kernel/sched/pelt.h"
+            pelt_c = root / "kernel/sched/pelt.c"
+            if pelt_h.is_file() and pelt_c.is_file():
+                htxt = pelt_h.read_text(encoding="utf-8", errors="ignore")
+                ctxt = pelt_c.read_text(encoding="utf-8", errors="ignore")
+                if "LOAD_AVG_PERIOD" in htxt and "runnable_avg_yN_inv[]" in ctxt:
+                    htxt = re.sub(r"#define LOAD_AVG_PERIOD\s+\d+", f"#define LOAD_AVG_PERIOD {halflife}", htxt)
+                    htxt = re.sub(r"#define LOAD_AVG_MAX\s+\d+", f"#define LOAD_AVG_MAX {load_avg_max}", htxt)
+                    ctxt = re.sub(r"static const u32 runnable_avg_yN_inv\[\]\s*=\s*\{[^}]*\};", inv_block, ctxt, flags=re.DOTALL)
+                    ctxt = re.sub(r"static const u32 runnable_avg_yN_sum\[\]\s*=\s*\{[^}]*\};", sum_block, ctxt, flags=re.DOTALL)
+                    pelt_h.write_text(htxt, encoding="utf-8")
+                    pelt_c.write_text(ctxt, encoding="utf-8")
+                    print(f"Applied {halflife}ms PELT half-life in {root}")
+
+            # Lower default RT task uclamp_min (384) so audio/sensor SCHED_FIFO threads don't pin Cortex-X4 prime core
+            rt_c = root / "kernel/sched/rt.c"
+            if rt_c.is_file():
+                rtxt = rt_c.read_text(encoding="utf-8", errors="ignore")
+                rtxt_new, rcount = re.subn(
+                    r"(unsigned int sysctl_sched_uclamp_util_min_rt_default\s*=\s*)SCHED_CAPACITY_SCALE\s*;",
+                    r"\g<1>384;",
+                    rtxt,
+                )
+                if rcount > 0:
+                    rt_c.write_text(rtxt_new, encoding="utf-8")
+                    print(f"Lowered sysctl_sched_uclamp_util_min_rt_default to 384 in {rt_c}")
+
+            # Force RCU_LAZY_DEFAULT_OFF default to n in Kconfig so Lazy RCU is active at boot
+            rcu_kc = root / "kernel/rcu/Kconfig"
+            if rcu_kc.is_file():
+                rktxt = rcu_kc.read_text(encoding="utf-8", errors="ignore")
+                rktxt_new = re.sub(
+                    r"(config RCU_LAZY_DEFAULT_OFF\b[\s\S]*?\bdefault\s+)y\b",
+                    r"\1n",
+                    rktxt,
+                    count=1,
+                )
+                if rktxt_new != rktxt:
+                    rcu_kc.write_text(rktxt_new, encoding="utf-8")
+                    print(f"Set RCU_LAZY_DEFAULT_OFF default to n in {rcu_kc}")
+
+            # Inject Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker) via late_initcall
+            wakeup_c = root / "drivers/base/power/wakeup.c"
+            if wakeup_c.is_file():
+                wtxt = wakeup_c.read_text(encoding="utf-8", errors="ignore")
+                if "boeffla_wakelock_blocker" not in wtxt and "wakeup_source_activate(" in wtxt:
+                    wtxt = re.sub(
+                        r"(static void wakeup_source_activate\(struct wakeup_source \*ws\)\s*\{)",
+                        r"#include <linux/init.h>\n#include <linux/miscdevice.h>\nstatic char list_wl[255] = {0};\nstatic bool wl_blocker_active = false;\n\1\n\tif (wl_blocker_active && ws && ws->name && strstr(list_wl, ws->name) != NULL) {\n\t\tws->active = false;\n\t\treturn;\n\t}",
+                        wtxt,
+                        count=1,
+                    )
+                    boeffla_sysfs = (
+                        "\nstatic ssize_t wakelock_blocker_show(struct device *dev, struct device_attribute *attr, char *buf)\n"
+                        "{\n\treturn sysfs_emit(buf, \"%s\\n\", list_wl);\n}\n\n"
+                        "static ssize_t wakelock_blocker_store(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)\n"
+                        "{\n\tsize_t len = min(count, sizeof(list_wl) - 1);\n\tmemcpy(list_wl, buf, len);\n\tlist_wl[len] = '\\0';\n\tstrim(list_wl);\n\twl_blocker_active = (strlen(list_wl) > 0);\n\treturn count;\n}\n\n"
+                        "static DEVICE_ATTR_RW(wakelock_blocker);\n"
+                        "static struct attribute *boeffla_wl_attrs[] = { &dev_attr_wakelock_blocker.attr, NULL };\n"
+                        "ATTRIBUTE_GROUPS(boeffla_wl);\n"
+                        "static struct miscdevice boeffla_wl_device = { .minor = MISC_DYNAMIC_MINOR, .name = \"boeffla_wakelock_blocker\", .groups = boeffla_wl_groups };\n\n"
+                        "static int __init boeffla_wl_init(void)\n"
+                        "{\n\treturn misc_register(&boeffla_wl_device);\n}\n"
+                        "late_initcall(boeffla_wl_init);\n"
+                    )
+                    wtxt = wtxt + boeffla_sysfs
+                    wakeup_c.write_text(wtxt, encoding="utf-8")
+                    print(f"Injected boeffla_wakelock_blocker in {wakeup_c}")
+
+            # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
+            k_mk = root / "kernel/Makefile"
+            if k_mk.is_file():
+                mtxt = k_mk.read_text(encoding="utf-8", errors="ignore")
+                if "cmd_ikconfig" in mtxt and "CONFIG_KPM" not in mtxt:
+                    spoof_rhs = (
+                        "(sed -E '"
+                        r"s/^(CONFIG_(?:KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*)=.*/# \1 is not set/; "
+                        r"s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
+                        r's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/'
+                        "' $< | $(KGZIP) -n -f -9 > $@)"
+                    )
+                    mtxt_new, count = re.subn(
+                        r"^([ \t]*cmd_ikconfig\s*=\s*).*$",
+                        lambda m: m.group(1) + spoof_rhs,
+                        mtxt,
+                        flags=re.MULTILINE,
+                    )
+                    if count > 0:
+                        k_mk.write_text(mtxt_new, encoding="utf-8")
+                        print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
+
+            # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel
+            top_mk = root / "Makefile"
+            if top_mk.is_file():
+                tmtxt = top_mk.read_text(encoding="utf-8", errors="ignore")
+                if "filechk_kernel.release" in tmtxt and "Normie-Kernel" not in tmtxt:
+                    tmtxt_new = re.sub(
+                        r'(define filechk_kernel\.release\s*\n\s*)echo\s+"([^"]+)"',
+                        r'\1v="\2"; case "$$v" in *-Normie-Kernel*) echo "$$v" ;; *) echo "$$v-Normie-Kernel" ;; esac',
+                        tmtxt,
+                    )
+                    if tmtxt_new != tmtxt:
+                        top_mk.write_text(tmtxt_new, encoding="utf-8")
+                        print(f"Patched filechk_kernel.release in {top_mk}")
+
+            # E2. Also patch scripts/setlocalversion for non-Kleaf fallback paths
+            setlocal = root / "scripts/setlocalversion"
+            if setlocal.is_file():
+                sltxt = setlocal.read_text(encoding="utf-8", errors="ignore")
+                sltxt = sltxt.replace("-Wild", "").replace("-Haroon-Kernel", "")
+                if "Normie-Kernel" not in sltxt:
+                    sltxt = re.sub(
+                        r'^([ \t]*echo\s+"\$res")',
+                        'res="${res%-dirty}"\ncase "$res" in *-Normie-Kernel*) ;; *) res="${res}-Normie-Kernel" ;; esac\n\\1',
+                        sltxt,
+                        flags=re.MULTILINE,
+                    )
+                    setlocal.write_text(sltxt, encoding="utf-8")
+                    print(f"Patched UTS_RELEASE branding in {setlocal}")
+
+            for lv in root.glob("localversion*"):
+                lv.unlink(missing_ok=True)
+
+        # E3. Patch Kleaf stamp.bzl without literal '$' + '{{' so GitHub Actions does not parse it as an expression
+        stamp_bzl = kp_dir / "build/kernel/kleaf/impl/stamp.bzl"
+        if stamp_bzl.is_file():
+            sbtxt = stamp_bzl.read_text(encoding="utf-8", errors="ignore")
+            target_str = 'scmversion="$' + '{{scmversion_prefix}}$' + '{{stable_scmversion}}"'
+            if "Normie-Kernel" not in sbtxt and target_str in sbtxt:
+                sbtxt = sbtxt.replace(
+                    target_str,
+                    target_str[:-1] + '-Normie-Kernel"',
+                )
+                stamp_bzl.write_text(sbtxt, encoding="utf-8")
+                print(f"Patched Kleaf scmversion in {stamp_bzl}")
+        PYEOF
         fi
-       done
-      fi
 
-      # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I into runner.elf rules
-      python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
-     import pathlib, re, sys
+        # 1. Initialize variables as empty (clears them out for "none")
+        BAZEL_LTO=""
+        SCRIPT_LTO=""
 
-     kernel_dir = pathlib.Path(sys.argv[1])
-     ksu_ver = sys.argv[2]
-     inc_flags = "-I$(srctree)/drivers/kernelsu -I$(srctree)/drivers/kernelsu/include"
+        # 2. Default to Full Clang LTO unless thin/none is explicitly requested
+        EFFECTIVE_LTO="${BUILD_LTO:-full}"
+        if [[ "$EFFECTIVE_LTO" == "default" ]]; then
+          EFFECTIVE_LTO="full"
+        fi
+        if [[ "$EFFECTIVE_LTO" == "thin" || "$EFFECTIVE_LTO" == "full" ]]; then
+          BAZEL_LTO="--lto=$EFFECTIVE_LTO"
+          SCRIPT_LTO="LTO=$EFFECTIVE_LTO"
+        fi
 
-     targets = [
-         kernel_dir / "drivers/kernelsu/Kbuild",
-         kernel_dir / "KernelSU/kernel/Kbuild",
-         kernel_dir / "BakaSU/kernel/Kbuild",
-     ]
+        if [[ $BRANCH == SM-A055* || $BRANCH == SM-X926B* || $BRANCH == SM-A146P* ]]; then
+          chmod +x build_kernel.sh
+          env $SCRIPT_LTO ./build_kernel.sh || true
+        elif [[ $BRANCH == SM-S926* ]]; then
+          tools/bazel build --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I $BAZEL_LTO //projects/s5e9945:s5e9945_user
+        elif [[ $BRANCH == SM-A556* ]]; then
+          tools/bazel build --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I $BAZEL_LTO //projects/s5e8845:s5e8845_user
+        elif [[ $BRANCH == SM-A566* ]]; then
+          ln -s "$PWD/kernel-6.6" common
+          tools/bazel build --config=stamp --config=mx8855_user //exynos/device/mx/mx8855:mx8855
+        elif [[ $BRANCH == SM-S938B* ]]; then
+          sed -i '/drivers\/net\/usb\/smsc75xx\.ko/d;/drivers\/net\/usb\/smsc95xx\.ko/d' kernel_platform/common/modules.bzl
+          chmod +x build_kernel_GKI.sh
+          env $SCRIPT_LTO ./build_kernel_GKI.sh || true
+        elif [[ $KERNEL_VER == 6.* ]]; then
+          chmod +x build_kernel_GKI.sh
+          env $SCRIPT_LTO ./build_kernel_GKI.sh || true
+        elif [[ -d kernel_platform ]]; then
+          cd kernel_platform
+          tools/bazel build $BAZEL_LTO //common:kernel_aarch64
+        fi
 
-     for kbuild in targets:
-         if not kbuild.is_file():
-             continue
-         text = kbuild.read_text(encoding="utf-8", errors="ignore")
+        # 5. Copy built kernel Image out of Bazel cache into dist directories and verify embedded Linux version string
+        if [ -d kernel_platform ]; then
+          mkdir -p sec/dist kernel_platform/dist
+          mapfile -t BAZEL_IMAGES < <(
+            find -L kernel_platform/bazel-bin -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
+          )
+          if [ "${#BAZEL_IMAGES[@]}" -eq 0 ]; then
+            mapfile -t BAZEL_IMAGES < <(
+              find kernel_platform/out -path "*/bazel-out/*/bin/*" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
+            )
+          fi
+          for img in "${BAZEL_IMAGES[@]}"; do
+            echo "Copying Bazel artifact: $img"
+            cp -fL "$img" sec/dist/
+            cp -fL "$img" kernel_platform/dist/
+            if [ -d device/qcom/gki-kernel ]; then
+              cp -fL "$img" device/qcom/gki-kernel/
+            fi
+          done
+          ls -lh sec/dist/
+          if [ -f sec/dist/Image ]; then
+            echo "=== Embedded Kernel Version Banner ==="
+            strings sec/dist/Image | grep -m 3 "Linux version " || true
+          fi
+        fi
 
-         text = re.sub(
-             r"\$\(error\b(?=[\s\S]*?(?:BakaSU|git submodule))",
-             "$(warning",
-             text,
-         )
-         text = re.sub(
-             r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
-             "KSU_SRC := $(srctree)/drivers/kernelsu",
-             text,
-             flags=re.MULTILINE,
-         )
-         text = re.sub(
-             r"^[ \t]*KSU_VERSION[ \t]*[:?]?=.*$",
-             f"KSU_VERSION := {ksu_ver}",
-             text,
-             flags=re.MULTILINE,
-         )
+    - name: start make build
+      if: inputs.build_type == 'make'
+      shell: bash
+      run: |
+        set -e
+        set -x
+        # 1. Initialize variables as empty (clears them out for "default")
+        SCRIPT_LTO=""
 
-         header = (
-             "KSU_SRC := $(srctree)/drivers/kernelsu\n"
-             f"KSU_VERSION := {ksu_ver}\n"
-             f"KSU_EXTRA_INC := {inc_flags}\n"
-         )
+        # 2. Only populate if explicit modifications are requested
+        if [[ "$BUILD_LTO" == "thin" || "$BUILD_LTO" == "full" ]]; then
+          SCRIPT_LTO="LTO=$BUILD_LTO"
+        fi
 
-         patched_lines = []
-         in_runner_rule = False
-         for line in text.splitlines():
-             stripped = line.strip()
-             if not line.startswith("\t"):
-                 if re.match(r"^(?:quiet_)?cmd_.*runner.*=", stripped):
-                     if "$(KSU_EXTRA_INC)" not in line:
-                         line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
-                     in_runner_rule = line.endswith("\\")
-                 elif ":" in line and not stripped.startswith("#") and "=" not in line.split(":", 1)[0]:
-                     target_part = line.split(":", 1)[0]
-                     in_runner_rule = "runner" in target_part
-                 elif not line.endswith("\\"):
-                     in_runner_rule = False
-             elif in_runner_rule and "$(KSU_EXTRA_INC)" not in line:
-                 if re.search(r"(\$\(CC\)|\bclang\b|\bgcc\b)", line):
-                     line = re.sub(r"(\$\(CC\)|\bclang\b|\bgcc\b)", r"\1 $(KSU_EXTRA_INC)", line, count=1)
-                 elif " -o " in line:
-                     line = line.replace(" -o ", " $(KSU_EXTRA_INC) -o ", 1)
-             patched_lines.append(line)
-
-         footer = (
-             "\nccflags-y += $(KSU_EXTRA_INC)\n"
-             "subdir-ccflags-y += $(KSU_EXTRA_INC)\n"
-         )
-         kbuild.write_text(header + "\n".join(patched_lines) + footer, encoding="utf-8")
-         print(f"Patched {kbuild}")
-     PYEOF
-
-      # 4. Apply KMI-safe optimizations, battery tweaks, drivers, 16ms PELT, /proc/config.gz spoofing, and Normie-Kernel UTS_RELEASE
-      EFFECTIVE_LTO="$BUILD_LTO"
-      if [[ -z "$EFFECTIVE_LTO" || "$EFFECTIVE_LTO" == "default" ]]; then
-       EFFECTIVE_LTO="full"
-      fi
-
-      python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" << 'PYEOF'
-     import os, pathlib, re, sys
-
-     roots = []
-     seen_real = set()
-     for raw in (sys.argv[1], sys.argv[2]):
-         p = pathlib.Path(raw)
-         if p.is_dir():
-             real = os.path.realpath(p)
-             if real not in seen_real:
-                 seen_real.add(real)
-                 roots.append(p)
-
-     lto_mode = sys.argv[3]
-     kp_dir = pathlib.Path(sys.argv[4])
-
-     base_config_lines = [
-         'CONFIG_LOCALVERSION="-Normie-Kernel"',
-         # 300Hz display-aligned kernel timer
-         "# CONFIG_HZ_100 is not set",
-         "# CONFIG_HZ_250 is not set",
-         "# CONFIG_HZ_1000 is not set",
-         "CONFIG_HZ_300=y",
-         "CONFIG_HZ=300",
-         # Battery & Deep Sleep Optimizations (KMI-safe)
-         "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
-         "CONFIG_SUSPEND_SKIP_SYNC=y",
-         # MGLRU active at boot
-         "CONFIG_LRU_GEN=y",
-         "CONFIG_LRU_GEN_ENABLED=y",
-         "# CONFIG_LRU_GEN_STATS is not set",
-         # Zstd crypto & F2FS Zstd/LZ4 compression
-         "CONFIG_CRYPTO_ZSTD=y",
-         "CONFIG_F2FS_FS_COMPRESSION=y",
-         "CONFIG_F2FS_FS_ZSTD=y",
-         "CONFIG_F2FS_FS_LZ4=y",
-         "CONFIG_F2FS_FS_LZ4HC=y",
-         # Built-in controller drivers
-         "CONFIG_INPUT_JOYDEV=y",
-         "CONFIG_INPUT_JOYSTICK=y",
-         "CONFIG_JOYSTICK_XPAD=y",
-         "CONFIG_JOYSTICK_XPAD_FF=y",
-         "CONFIG_JOYSTICK_XPAD_LEDS=y",
-         "CONFIG_HID_PLAYSTATION=y",
-         "CONFIG_PLAYSTATION_FF=y",
-         "CONFIG_HID_NINTENDO=y",
-         "CONFIG_NINTENDO_FF=y",
-         "CONFIG_HID_SONY=y",
-         "CONFIG_SONY_FF=y",
-         "CONFIG_HID_MICROSOFT=y",
-         "CONFIG_HID_STEAM=y",
-         # USB Gadget HID & Mass Storage
-         "CONFIG_USB_CONFIGFS_F_HID=y",
-         "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-         # Default BBRv3 + FQ pacing (with built-in CAKE) + WireGuard
-         "CONFIG_TCP_CONG_ADVANCED=y",
-         "# CONFIG_TCP_CONG_BIC is not set",
-         "# CONFIG_TCP_CONG_WESTWOOD is not set",
-         "# CONFIG_TCP_CONG_HTCP is not set",
-         "CONFIG_TCP_CONG_BBR=y",
-         "CONFIG_DEFAULT_BBR=y",
-         'CONFIG_DEFAULT_TCP_CONG="bbr"',
-         "CONFIG_NET_SCHED=y",
-         "CONFIG_NET_SCH_CAKE=y",
-         "CONFIG_NET_SCH_FQ=y",
-         "CONFIG_NET_SCH_DEFAULT=y",
-         "CONFIG_DEFAULT_FQ=y",
-         'CONFIG_DEFAULT_NET_SCH="fq"',
-         "CONFIG_WIREGUARD=y",
-     ]
-
-     if lto_mode == "full":
-         base_config_lines += [
-             "CONFIG_LTO_CLANG=y",
-             "# CONFIG_LTO_NONE is not set",
-             "# CONFIG_LTO_CLANG_THIN is not set",
-             "CONFIG_LTO_CLANG_FULL=y",
-         ]
-     elif lto_mode == "thin":
-         base_config_lines += [
-             "CONFIG_LTO_CLANG=y",
-             "# CONFIG_LTO_NONE is not set",
-             "# CONFIG_LTO_CLANG_FULL is not set",
-             "CONFIG_LTO_CLANG_THIN=y",
-         ]
-
-     extra_strip_keys = {
-         "CONFIG_DEFAULT_CUBIC",
-         "CONFIG_DEFAULT_RENO",
-         "CONFIG_DEFAULT_PFIFO_FAST",
-         "CONFIG_DEFAULT_FQ_CODEL",
-         "CONFIG_DEFAULT_CODEL",
-         "CONFIG_DEFAULT_SFQ",
-         "CONFIG_DEFAULT_CAKE",
-         "CONFIG_ZRAM_MULTI_COMP",
-         "CONFIG_ZRAM_DEF_COMP_LZORLE",
-         "CONFIG_ZRAM_DEF_COMP_LZO",
-         "CONFIG_ZRAM_DEF_COMP_LZ4",
-         "CONFIG_ZRAM_DEF_COMP_LZ4HC",
-         "CONFIG_ZRAM_DEF_COMP_842",
-         "CONFIG_ZRAM_DEF_COMP_ZSTD",
-         "CONFIG_ZRAM_DEF_COMP",
-         "CONFIG_ZSTD_COMPRESS",
-         "CONFIG_ZSTD_DECOMPRESS",
-         "CONFIG_INPUT_FF_MEMLESS",
-         "CONFIG_USB_F_MASS_STORAGE",
-     }
-
-     builtin_kos = (
-         "joydev.ko",
-         "xpad.ko",
-         "hid-playstation.ko",
-         "hid-nintendo.ko",
-         "hid-sony.ko",
-         "hid-microsoft.ko",
-         "hid-steam.ko",
-         "wireguard.ko",
-         "sch_cake.ko",
-         "sch_fq.ko",
-         "tcp_bbr.ko",
-     )
-
-     halflife = 16
-     y = 0.5 ** (1.0 / halflife)
-     inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
-     sum_vals = []
-     acc = 0
-     for i in range(32):
-         acc += int(1024 * (y ** (i + 1)))
-         sum_vals.append(acc)
-     load_avg_max = sum(int(1024 * (y ** i)) for i in range(1, 500)) + 1024
-
-     inv_block = "static const u32 runnable_avg_yN_inv[] = {\n"
-     for row in range(0, 32, 4):
-         inv_block += "\t" + ", ".join(f"0x{v:08x}" for v in inv_vals[row:row + 4]) + ",\n"
-     inv_block += "};"
-
-     sum_block = "static const u32 runnable_avg_yN_sum[] = {\n"
-     for row in range(0, 32, 8):
-         sum_block += "\t" + ", ".join(f"{v:5d}" for v in sum_vals[row:row + 8]) + ",\n"
-     sum_block += "};"
-
-     for root in roots:
-         print(f"Configuring kernel tree: {root}")
-         config_lines = list(base_config_lines)
-
-         zram_kc = root / "drivers/block/zram/Kconfig"
-         if zram_kc.is_file():
-             ztxt = zram_kc.read_text(encoding="utf-8", errors="ignore")
-             if re.search(r"^\s*config\s+ZRAM_MULTI_COMP\b", ztxt, flags=re.MULTILINE):
-                 config_lines.append("CONFIG_ZRAM_MULTI_COMP=y")
-             if re.search(r"^\s*config\s+ZRAM_DEF_COMP_ZSTD\b", ztxt, flags=re.MULTILINE):
-                 config_lines.append("CONFIG_ZRAM_DEF_COMP_ZSTD=y")
-                 config_lines.append('CONFIG_ZRAM_DEF_COMP="zstd"')
-
-         managed_keys = set(extra_strip_keys)
-         for line in config_lines:
-             m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", line)
-             if m:
-                 managed_keys.add(m.group(1))
-
-         def strip_managed(text: str) -> str:
-             out = []
-             for ln in text.splitlines():
-                 m = re.match(r"^(?:# )?(CONFIG_[A-Z0-9_]+)(?:=| is not set)", ln.strip())
-                 if m and m.group(1) in managed_keys:
-                     continue
-                 out.append(ln)
-             return "\n".join(out) + "\n"
-
-         gki_cfg = root / "arch/arm64/configs/gki_defconfig"
-         if gki_cfg.is_file():
-             cleaned = strip_managed(gki_cfg.read_text(encoding="utf-8", errors="ignore"))
-             gki_cfg.write_text(cleaned + "\n# Normie-Kernel additions\n" + "\n".join(config_lines) + "\n", encoding="utf-8")
-
-         cfg_dir = root / "arch/arm64/configs"
-         if cfg_dir.is_dir():
-             for frag in cfg_dir.rglob("*.config"):
-                 ftxt = frag.read_text(encoding="utf-8", errors="ignore")
-                 if any(k in ftxt for k in managed_keys):
-                     frag.write_text(strip_managed(ftxt), encoding="utf-8")
-             for sec_cfg in cfg_dir.rglob("*_defconfig"):
-                 if sec_cfg != gki_cfg:
-                     stxt = sec_cfg.read_text(encoding="utf-8", errors="ignore")
-                     if any(k in stxt for k in managed_keys):
-                         sec_cfg.write_text(strip_managed(stxt), encoding="utf-8")
-
-         for bzl in root.glob("**/modules.bzl"):
-             btxt = bzl.read_text(encoding="utf-8", errors="ignore")
-             new_lines = [ln for ln in btxt.splitlines() if not any(ln.strip().endswith(ko + '",') or ln.strip().endswith(ko + '"') for ko in builtin_kos)]
-             if len(new_lines) != len(btxt.splitlines()):
-                 bzl.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                 print(f"Updated {bzl} for built-in modules")
-
-         pelt_h = root / "kernel/sched/pelt.h"
-         pelt_c = root / "kernel/sched/pelt.c"
-         if pelt_h.is_file() and pelt_c.is_file():
-             htxt = pelt_h.read_text(encoding="utf-8", errors="ignore")
-             ctxt = pelt_c.read_text(encoding="utf-8", errors="ignore")
-             if "LOAD_AVG_PERIOD 32" in htxt and "runnable_avg_yN_inv[]" in ctxt:
-                 htxt = htxt.replace("#define LOAD_AVG_PERIOD 32", f"#define LOAD_AVG_PERIOD {halflife}")
-                 htxt = re.sub(r"#define LOAD_AVG_MAX\s+\d+", f"#define LOAD_AVG_MAX {load_avg_max}", htxt)
-                 ctxt = re.sub(r"static const u32 runnable_avg_yN_inv\[\]\s*=\s*\{[^}]*\};", inv_block, ctxt, flags=re.DOTALL)
-                 ctxt = re.sub(r"static const u32 runnable_avg_yN_sum\[\]\s*=\s*\{[^}]*\};", sum_block, ctxt, flags=re.DOTALL)
-                 pelt_h.write_text(htxt, encoding="utf-8")
-                 pelt_c.write_text(ctxt, encoding="utf-8")
-                 print(f"Applied 16ms PELT half-life in {root}")
-
-         # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
-         k_mk = root / "kernel/Makefile"
-         if k_mk.is_file():
-             mtxt = k_mk.read_text(encoding="utf-8", errors="ignore")
-             if "cmd_ikconfig" in mtxt and "CONFIG_KPM" not in mtxt:
-                 spoof_rhs = (
-                     "(sed -E '"
-                     r"s/^(CONFIG_(?:KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*)=.*/# \1 is not set/; "
-                     r"s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
-                     r's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/'
-                     "' $< | $(KGZIP) -n -f -9 > $@)"
-                 )
-                 mtxt_new, count = re.subn(
-                     r"^([ \t]*cmd_ikconfig\s*=\s*).*$",
-                     lambda m: m.group(1) + spoof_rhs,
-                     mtxt,
-                     flags=re.MULTILINE,
-                 )
-                 if count > 0:
-                     k_mk.write_text(mtxt_new, encoding="utf-8")
-                     print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
-
-         # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel
-         top_mk = root / "Makefile"
-         if top_mk.is_file():
-             tmtxt = top_mk.read_text(encoding="utf-8", errors="ignore")
-             if "filechk_kernel.release" in tmtxt and "Normie-Kernel" not in tmtxt:
-                 tmtxt_new = re.sub(
-                     r'(define filechk_kernel\.release\s*\n\s*)echo\s+"([^"]+)"',
-                     r'\1v="\2"; case "$$v" in *-Normie-Kernel*) echo "$$v" ;; *) echo "$$v-Normie-Kernel" ;; esac',
-                     tmtxt,
-                 )
-                 if tmtxt_new != tmtxt:
-                     top_mk.write_text(tmtxt_new, encoding="utf-8")
-                     print(f"Patched filechk_kernel.release in {top_mk}")
-
-         # E2. Also patch scripts/setlocalversion for non-Kleaf fallback paths
-         setlocal = root / "scripts/setlocalversion"
-         if setlocal.is_file():
-             sltxt = setlocal.read_text(encoding="utf-8", errors="ignore")
-             sltxt = sltxt.replace("-Wild", "").replace("-Haroon-Kernel", "")
-             if "Normie-Kernel" not in sltxt:
-                 sltxt = re.sub(
-                     r'^([ \t]*echo\s+"\$res")',
-                     'res="${res%-dirty}"\ncase "$res" in *-Normie-Kernel*) ;; *) res="${res}-Normie-Kernel" ;; esac\n\\1',
-                     sltxt,
-                     flags=re.MULTILINE,
-                 )
-                 setlocal.write_text(sltxt, encoding="utf-8")
-                 print(f"Patched UTS_RELEASE branding in {setlocal}")
-
-         for lv in root.glob("localversion*"):
-             lv.unlink(missing_ok=True)
-
-     # E3. Patch Kleaf stamp.bzl without literal '$' + '{{' so GitHub Actions does not parse it as an expression
-     stamp_bzl = kp_dir / "build/kernel/kleaf/impl/stamp.bzl"
-     if stamp_bzl.is_file():
-         sbtxt = stamp_bzl.read_text(encoding="utf-8", errors="ignore")
-         target_str = 'scmversion="$' + '{{scmversion_prefix}}$' + '{{stable_scmversion}}"'
-         if "Normie-Kernel" not in sbtxt and target_str in sbtxt:
-             sbtxt = sbtxt.replace(
-                 target_str,
-                 target_str[:-1] + '-Normie-Kernel"',
-             )
-             stamp_bzl.write_text(sbtxt, encoding="utf-8")
-             print(f"Patched Kleaf scmversion in {stamp_bzl}")
-     PYEOF
-     fi
-
-     # 1. Initialize variables as empty (clears them out for "none")
-     BAZEL_LTO=""
-     SCRIPT_LTO=""
-
-     # 2. Default to Full Clang LTO unless thin/none is explicitly requested
-     EFFECTIVE_LTO="${BUILD_LTO:-full}"
-     if [[ "$EFFECTIVE_LTO" == "default" ]]; then
-       EFFECTIVE_LTO="full"
-     fi
-     if [[ "$EFFECTIVE_LTO" == "thin" || "$EFFECTIVE_LTO" == "full" ]]; then
-       BAZEL_LTO="--lto=$EFFECTIVE_LTO"
-       SCRIPT_LTO="LTO=$EFFECTIVE_LTO"
-     fi
-
-     if [[ $BRANCH == SM-A055* || $BRANCH == SM-X926B* || $BRANCH == SM-A146P* ]]; then
-      chmod +x build_kernel.sh
-      env $SCRIPT_LTO ./build_kernel.sh || true
-     elif [[ $BRANCH == SM-S926* ]]; then
-       #tools/bazel run --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I //projects/s5e9945:s5e9945_user_dist
-       tools/bazel build --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I $BAZEL_LTO //projects/s5e9945:s5e9945_user
-      elif [[ $BRANCH == SM-A556* ]]; then
-       #tools/bazel run --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I //projects/s5e8845:s5e8845_user_dist
-       tools/bazel build --nocheck_bzl_visibility --config=stamp --sandbox_debug --verbose_failures --debug_make_verbosity=I $BAZEL_LTO //projects/s5e8845:s5e8845_user
-     elif [[ $BRANCH == SM-A566* ]]; then
-       ln -s "$PWD/kernel-6.6" common
-       #tools/bazel run --config=stamp --config=mx8855_user //exynos/device/mx/mx8855:mx8855_dist
-       tools/bazel build --config=stamp --config=mx8855_user //exynos/device/mx/mx8855:mx8855
-     elif [[ $BRANCH == SM-S938B* ]]; then
-      sed -i '/drivers\/net\/usb\/smsc75xx\.ko/d;/drivers\/net\/usb\/smsc95xx\.ko/d' kernel_platform/common/modules.bzl
-      chmod +x build_kernel_GKI.sh
-      env $SCRIPT_LTO ./build_kernel_GKI.sh || true
-     elif [[ $KERNEL_VER == 6.* ]]; then
-      chmod +x build_kernel_GKI.sh
-      env $SCRIPT_LTO ./build_kernel_GKI.sh || true
-     elif [[ -d kernel_platform ]]; then
-      cd kernel_platform
-      tools/bazel build $BAZEL_LTO //common:kernel_aarch64
-     fi
-
-     # 5. Copy built kernel Image out of Bazel cache into dist directories and verify embedded Linux version string
-     if [ -d kernel_platform ]; then
-      mkdir -p sec/dist kernel_platform/dist
-      mapfile -t BAZEL_IMAGES < <(
-       find -L kernel_platform/bazel-bin -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
-      )
-      if [ "${#BAZEL_IMAGES[@]}" -eq 0 ]; then
-       mapfile -t BAZEL_IMAGES < <(
-        find kernel_platform/out -path "*/bazel-out/*/bin/*" -type f \( -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \) 2>/dev/null || true
-       )
-      fi
-      for img in "${BAZEL_IMAGES[@]}"; do
-       echo "Copying Bazel artifact: $img"
-       cp -fL "$img" sec/dist/
-       cp -fL "$img" kernel_platform/dist/
-       if [ -d device/qcom/gki-kernel ]; then
-        cp -fL "$img" device/qcom/gki-kernel/
-       fi
-      done
-      ls -lh sec/dist/
-      if [ -f sec/dist/Image ]; then
-       echo "=== Embedded Kernel Version Banner ==="
-       strings sec/dist/Image | grep -m 3 "Linux version " || true
-      fi
-     fi
-      
-  - name: start make build
-    if: inputs.build_type == 'make'
-    shell: bash
-    run: |
-     set -e
-     set -x
-     # 1. Initialize variables as empty (clears them out for "default")
-     SCRIPT_LTO=""
-
-     # 2. Only populate if explicit modifications are requested
-     if [[ "$BUILD_LTO" == "thin" || "$BUILD_LTO" == "full" ]]; then
-       SCRIPT_LTO="LTO=$BUILD_LTO"
-     fi
-     
-     cd "$CONFIG"
-     if [[ -f build_kernel_GKI.sh ]]; then
-      chmod +x build_kernel_GKI.sh
-      env $SCRIPT_LTO ./build_kernel_GKI.sh || true
-     elif [[ -f build_kernel.sh ]]; then
-      sudo apt update
-      sudo apt-get install -y libyaml-dev
-      chmod +x build_kernel.sh
-      env $SCRIPT_LTO ./build_kernel.sh || true
-     elif [[ $BRANCH == *LOS* ]]; then
-      CONFIGS=(${{ env.CONFIG_ARRAY }})
-      TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$PWD/toolchain/clang/host/linux-x86/aosp-clang/$CLANG_VER}"
-      OUT_DIR="${OUT_DIR:-$PWD/out}"
-      JOBS="${JOBS:-$(nproc)}"
-      export ARCH=arm64
-      export SUBARCH=arm64
-      export LLVM=1
-      export LLVM_IAS=1
-      export CLANG_TRIPLE=aarch64-linux-gnu
-      export CROSS_COMPILE=aarch64-linux-gnu
-      export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-      export CC=clang
-      mkdir -p "$OUT_DIR"
-      make O="$OUT_DIR" ARCH=arm64 "${CONFIGS[@]}"
-      echo "Building Kernel"
-      make O="$OUT_DIR" ARCH=arm64 -j"$JOBS" Image
-     fi
+        cd "$CONFIG"
+        if [[ -f build_kernel_GKI.sh ]]; then
+          chmod +x build_kernel_GKI.sh
+          env $SCRIPT_LTO ./build_kernel_GKI.sh || true
+        elif [[ -f build_kernel.sh ]]; then
+          sudo apt update
+          sudo apt-get install -y libyaml-dev
+          chmod +x build_kernel.sh
+          env $SCRIPT_LTO ./build_kernel.sh || true
+        elif [[ $BRANCH == *LOS* ]]; then
+          CONFIGS=(${{ env.CONFIG_ARRAY }})
+          TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$PWD/toolchain/clang/host/linux-x86/aosp-clang/$CLANG_VER}"
+          OUT_DIR="${OUT_DIR:-$PWD/out}"
+          JOBS="${JOBS:-$(nproc)}"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CLANG_TRIPLE=aarch64-linux-gnu
+          export CROSS_COMPILE=aarch64-linux-gnu
+          export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+          export CC=clang
+          mkdir -p "$OUT_DIR"
+          make O="$OUT_DIR" ARCH=arm64 "${CONFIGS[@]}"
+          echo "Building Kernel"
+          make O="$OUT_DIR" ARCH=arm64 -j"$JOBS" Image
+        fi

@@ -1,0 +1,37 @@
+# Timer & CPUIdle
+CONFIG_HZ_100=y
+CONFIG_HZ=100
+CONFIG_CPU_IDLE_GOV_TEO=y
+
+# Multi-Generational LRU (MGLRU)
+CONFIG_LRU_GEN=y
+CONFIG_LRU_GEN_ENABLED=y
+
+# Lazy RCU & Power-Efficient Workqueues
+CONFIG_RCU_NOCB_CPU=y
+CONFIG_RCU_LAZY=y
+CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
+
+# Transparent Huge Pages (madvise only - stops background khugepaged wakeups)
+CONFIG_TRANSPARENT_HUGEPAGE=y
+# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set
+CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y
+
+# ZRAM ZSTD Compression
+CONFIG_CRYPTO_ZSTD=y
+CONFIG_ZRAM_DEF_COMP_ZSTD=y
+
+# BBR + Fair Queue Packet Pacing
+CONFIG_TCP_CONG_BBR=y
+CONFIG_DEFAULT_BBR=y
+CONFIG_DEFAULT_TCP_CONG="bbr"
+CONFIG_NET_SCH_FQ=y
+CONFIG_NET_SCH_DEFAULT=y
+CONFIG_DEFAULT_FQ=y
+CONFIG_DEFAULT_NET_SCH="fq"
+
+# Strip non-ABI-locked debug overhead (keeps CONFIG_TRACING for Samsung vendor .ko compatibility)
+# CONFIG_SCHED_DEBUG is not set
+# CONFIG_SLUB_DEBUG is not set
+# CONFIG_DEBUG_FS is not set
+# CONFIG_FTRACE is not set

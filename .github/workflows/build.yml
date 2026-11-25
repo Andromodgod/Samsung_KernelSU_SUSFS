@@ -12,6 +12,10 @@ on:
       build_type:
         required: false
         type: string
+      root_provider:
+        required: false
+        type: string
+        default: bakasu
       susfs:
         required: true
         type: string
@@ -24,9 +28,13 @@ on:
       nomount:
         required: true
         type: string
-      ksun:
+      bakasu:
         required: true
         type: string
+      finasu:
+        required: false
+        type: string
+        default: "false"
       droidspace:
         required: true
         type: string
@@ -54,7 +62,7 @@ on:
 
 jobs:
   build-samsung-gki:
-    name: "${{ inputs.branch }}"
+    name: "${{ inputs.branch }} (${{ inputs.root_provider }})"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -63,19 +71,32 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Store branch as env variable
-        run: BRANCH=${{ inputs.branch }} && echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+      - name: Store branch and root_provider as env variables
+        run: |
+          BRANCH=${{ inputs.branch }}
+          ROOT_PROVIDER=${{ inputs.root_provider }}
+          if [ -z "$ROOT_PROVIDER" ]; then
+            if [[ "${{ inputs.finasu }}" == "true" ]]; then
+              ROOT_PROVIDER="finasu"
+            elif [[ "${{ inputs.bakasu }}" == "true" ]]; then
+              ROOT_PROVIDER="bakasu"
+            else
+              ROOT_PROVIDER="clean"
+            fi
+          fi
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          echo "ROOT_PROVIDER=$ROOT_PROVIDER" >> $GITHUB_ENV
 
       - name: get kernel version before cloning
         uses: ./.github/actions/kernel-info
 
       - name: Store LTO as env variable
         run: |
-         if [[ $KERNEL_VER != 6.6 ]]; then
-          BUILD_LTO=${{ inputs.lto }} && echo "BUILD_LTO=$BUILD_LTO" >> $GITHUB_ENV
-         else
-          BUILD_LTO="default" && echo "BUILD_LTO=$BUILD_LTO" >> $GITHUB_ENV
-         fi
+          if [[ $KERNEL_VER != 6.6 ]]; then
+            BUILD_LTO=${{ inputs.lto }} && echo "BUILD_LTO=$BUILD_LTO" >> $GITHUB_ENV
+          else
+            BUILD_LTO="default" && echo "BUILD_LTO=$BUILD_LTO" >> $GITHUB_ENV
+          fi
 
       - name: Free Disk Space
         if: true
@@ -132,13 +153,13 @@ jobs:
           )
 
           for setting in "${SETTINGS[@]}"; do
-           export "$setting"
-           echo "$setting" >> $GITHUB_ENV
+            export "$setting"
+            echo "$setting" >> $GITHUB_ENV
           done
 
           if ccache --help 2>&1 | grep -q 'depend_mode'; then
-              export CCACHE_DEPEND=true
-              echo "CCACHE_DEPEND=true" >> $GITHUB_ENV
+            export CCACHE_DEPEND=true
+            echo "CCACHE_DEPEND=true" >> $GITHUB_ENV
           fi
 
       - name: restore ccache
@@ -183,16 +204,23 @@ jobs:
           done
 
       - name: Add BakaSU
-        if: inputs.ksun == 'true'
+        if: inputs.bakasu == 'true' && inputs.finasu != 'true'
         run: |
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
           cd "$KERNEL_ROOT"
-          rm -rf drivers/kernelsu KernelSU KernelSU-Next BakaSU
+          rm -rf drivers/kernelsu KernelSU BakaSU FinaSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
 
-          # Materialize drivers/kernelsu symlink into a real directory for Bazel's sandbox
+          TARGET_KSU_VER=35282
+
+          for repo in "$KERNEL_ROOT/BakaSU" "$KERNEL_ROOT/KernelSU" "drivers/kernelsu"; do
+            if [ -d "$repo/.git" ] && [ -f "$repo/.git/shallow" ]; then
+              git -C "$repo" fetch --unshallow 2>/dev/null || true
+            fi
+          done
+
           if [ -L "drivers/kernelsu" ]; then
             TARGET=$(readlink -f "drivers/kernelsu")
             rm -f "drivers/kernelsu"
@@ -200,7 +228,6 @@ jobs:
             echo "Materialized drivers/kernelsu from $TARGET"
           fi
 
-          # Patch KSU_SRC and bypass the .git submodule check (Kbuild:71) inside Bazel sandbox
           for KBUILD_FILE in \
             "$KERNEL_ROOT/drivers/kernelsu/Kbuild" \
             "$KERNEL_ROOT/KernelSU/kernel/Kbuild" \
@@ -209,10 +236,55 @@ jobs:
               sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$KBUILD_FILE"
               grep -q "KSU_SRC :=" "$KBUILD_FILE" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$KBUILD_FILE"
               sed -i '/You should use BakaSU as a git submodule/d' "$KBUILD_FILE"
-              echo "Patched KSU_SRC in $KBUILD_FILE:"
-              grep -n "KSU_SRC" "$KBUILD_FILE" || true
+              sed -i -E "s|^(KSU_LOCAL_VERSION[[:space:]]*[:?]?=).*|\1 $TARGET_KSU_VER|g" "$KBUILD_FILE"
+              sed -i -E "s|^(KSU_VERSION[[:space:]]*[:?]?=).*|\1 $TARGET_KSU_VER|g" "$KBUILD_FILE"
+              echo "Patched Kbuild in $KBUILD_FILE:"
+              grep -n -E "KSU_SRC|KSU_LOCAL_VERSION|KSU_VERSION" "$KBUILD_FILE" || true
             fi
           done
+
+      - name: Add FinaSU
+        if: inputs.finasu == 'true'
+        run: |
+          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
+          echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
+
+          cd "$KERNEL_ROOT"
+          rm -rf drivers/kernelsu KernelSU BakaSU FinaSU "$GITHUB_WORKSPACE/FinaSU"
+          git clone --depth=1 https://github.com/LyraVoid/FinaSU.git "$GITHUB_WORKSPACE/FinaSU"
+
+          if [ -f "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" ]; then
+            bash "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" --dir "$GITHUB_WORKSPACE/FinaSU"
+          elif [ -f "$GITHUB_WORKSPACE/FinaSU/setup.sh" ]; then
+            bash "$GITHUB_WORKSPACE/FinaSU/setup.sh"
+          else
+            mkdir -p drivers/kernelsu
+            if [ -d "$GITHUB_WORKSPACE/FinaSU/kernel" ]; then
+              cp -a "$GITHUB_WORKSPACE/FinaSU/kernel/." "drivers/kernelsu/"
+            else
+              cp -a "$GITHUB_WORKSPACE/FinaSU/." "drivers/kernelsu/"
+            fi
+          fi
+
+          if [ -d "$GITHUB_WORKSPACE/FinaSU/.git" ] && [ -f "$GITHUB_WORKSPACE/FinaSU/.git/shallow" ]; then
+            git -C "$GITHUB_WORKSPACE/FinaSU" fetch --unshallow 2>/dev/null || true
+          fi
+
+          if [ -L "drivers/kernelsu" ]; then
+            TARGET=$(readlink -f "drivers/kernelsu")
+            rm -f "drivers/kernelsu"
+            cp -a "$TARGET" "drivers/kernelsu"
+            echo "Materialized FinaSU drivers/kernelsu from $TARGET"
+          elif [ -d "drivers/kernelsu" ]; then
+            cp -a "$GITHUB_WORKSPACE/FinaSU/kernel/." "drivers/kernelsu/" 2>/dev/null || true
+          fi
+
+          if [ -f "drivers/Makefile" ] && ! grep -q "kernelsu" "drivers/Makefile"; then
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "drivers/Makefile"
+          fi
+          if [ -f "drivers/Kconfig" ] && ! grep -q "drivers/kernelsu/Kconfig" "drivers/Kconfig"; then
+            sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "drivers/Kconfig"
+          fi
 
       - name: Add SUSFS
         if: inputs.susfs == 'true'
@@ -255,20 +327,20 @@ jobs:
         uses: ./.github/actions/optimization
 
       - name: Set Kernel Configuration Variables
-        if: inputs.ksun == 'true'
+        if: inputs.bakasu == 'true' || inputs.finasu == 'true'
         uses: ./.github/actions/configs
 
-      - name: Clean BakaSU Kconfig & Bypass check_defconfig
+      - name: Clean Root Kconfig & Bypass check_defconfig
         run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
+          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
           DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
 
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            if [ "${{ inputs.ksun }}" == "true" ]; then
+            if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
-              if [ "${{ inputs.susfs }}" == "true" ]; then
+              if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
             fi
@@ -283,44 +355,26 @@ jobs:
       - name: Change Kernel Name and clean dirty
         uses: ./.github/actions/kernel-name
 
-      - name: Set Custom Kernel Name (Normie Kernel)
-        run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
-          DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
-
-          if [ -f "$DEFCONFIG" ]; then
-            sed -i '/^CONFIG_LOCALVERSION=/d' "$DEFCONFIG"
-            echo 'CONFIG_LOCALVERSION="-Normie-Kernel"' >> "$DEFCONFIG"
-          fi
-
-          if [ -f "$KERNEL_ROOT/scripts/setlocalversion" ]; then
-            sed -i 's/-Wild//g; s/-Haroon-Kernel//g' "$KERNEL_ROOT/scripts/setlocalversion"
-          fi
-
-          rm -f "$KERNEL_ROOT"/localversion*
-
       - name: remove protected exports
         uses: ./.github/actions/abi-export
 
       - name: Set file name
         uses: ./.github/actions/file-name
         with:
-         ksun: ${{ inputs.ksun }}
-         susfs: ${{ inputs.susfs }}
-         nomount: ${{ inputs.nomount }}
-         bbg: ${{ inputs.bbg }}
-         bbrv3: ${{ inputs.bbrv3 }}
-         droidspaces: ${{ inputs.droidspace }}
-         ntsync: ${{ inputs.ntsync }}
-         ipv6_nat: ${{ inputs.ipv6_nat }}
-         ttl: ${{ inputs.ttl }}
-         unicodefix: ${{ inputs.unicodefix }}
+          bakasu: ${{ inputs.bakasu }}
+          susfs: ${{ inputs.susfs }}
+          nomount: ${{ inputs.nomount }}
+          bbg: ${{ inputs.bbg }}
+          bbrv3: ${{ inputs.bbrv3 }}
+          droidspaces: ${{ inputs.droidspace }}
+          ntsync: ${{ inputs.ntsync }}
+          ipv6_nat: ${{ inputs.ipv6_nat }}
+          ttl: ${{ inputs.ttl }}
+          unicodefix: ${{ inputs.unicodefix }}
 
-      - name: Set Normie-Kernel and bakasu in Output Filename
+      - name: Set Normie-Kernel and Root Variant in Output Filename
         run: |
-          NEW_FILE_NAME="${FILE_NAME//KSUN/bakasu}"
-          NEW_FILE_NAME="${NEW_FILE_NAME//ksun/bakasu}"
-          NEW_FILE_NAME="${NEW_FILE_NAME//Haroon-Kernel/Normie-Kernel}"
+          NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
 
           if [[ "$NEW_FILE_NAME" != *"Normie-Kernel"* ]]; then
@@ -330,6 +384,24 @@ jobs:
               NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel"
             fi
           fi
+
+          case "${{ env.ROOT_PROVIDER }}" in
+            finasu)
+              if [[ "$NEW_FILE_NAME" != *"-finasu"* && "$NEW_FILE_NAME" != *"-FinaSU"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-finasu"
+              fi
+              ;;
+            bakasu)
+              if [[ "$NEW_FILE_NAME" != *"-bakasu"* && "$NEW_FILE_NAME" != *"-BakaSU"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-bakasu"
+              fi
+              ;;
+            clean)
+              if [[ "$NEW_FILE_NAME" != *"-clean"* && "$NEW_FILE_NAME" != *"-Clean"* ]]; then
+                NEW_FILE_NAME="${NEW_FILE_NAME}-clean"
+              fi
+              ;;
+          esac
 
           echo "FILE_NAME=$NEW_FILE_NAME" >> $GITHUB_ENV
           echo "Output FILE_NAME set to: $NEW_FILE_NAME"
@@ -341,24 +413,10 @@ jobs:
       - name: configure LTO
         uses: ./.github/actions/lto
 
-      - name: Materialize Out-of-Tree Symlinks for Bazel Sandbox
-        run: |
-          KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
-          if [ -d "$KERNEL_ROOT" ]; then
-            for link in drivers/kernelsu fs/nomount security/baseband-guard; do
-              if [ -L "$KERNEL_ROOT/$link" ]; then
-                TARGET=$(readlink -f "$KERNEL_ROOT/$link")
-                rm -f "$KERNEL_ROOT/$link"
-                cp -r "$TARGET" "$KERNEL_ROOT/$link"
-                echo "Materialized $link from $TARGET"
-              fi
-            done
-          fi
-
       - name: Build
         uses: ./.github/actions/build
         with:
-         build_type: ${{ inputs.build_type }}
+          build_type: ${{ inputs.build_type }}
 
       - name: Verify Kernel Image & Surface Compiler Errors
         run: |
@@ -426,30 +484,40 @@ jobs:
       - name: Generate Build Summary
         if: ${{ always() }}
         run: |
+          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
           echo "# Kernel Build Summary" > build_summary.md
           echo "## ${{ env.FILE_NAME }}" >> build_summary.md
           echo "## Build Information" >> build_summary.md
           echo "- **Android Version**: ${ANDROID_VER}" >> build_summary.md
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
+          echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
           echo "- **BBG**: Installed" >> build_summary.md
           echo "" >> build_summary.md
 
-          BAKASU_DIR=""
-          if [ -d "$KERNEL_ROOT/BakaSU" ]; then
-            BAKASU_DIR="$KERNEL_ROOT/BakaSU"
-          elif [ -d "$KERNEL_ROOT/KernelSU" ]; then
-            BAKASU_DIR="$KERNEL_ROOT/KernelSU"
-          fi
-
-          if [ -n "$BAKASU_DIR" ]; then
-            cd "$BAKASU_DIR"
-            BAKASU_COMMIT=$(git rev-parse HEAD)
-            BAKASU_URL="https://github.com/Baka-SU/BakaSU/commit/$BAKASU_COMMIT"
-            echo "- **BakaSU**: [$BAKASU_COMMIT]($BAKASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
-            cd "$GITHUB_WORKSPACE"
+          if [[ "${{ inputs.finasu }}" == "true" && -d "$GITHUB_WORKSPACE/FinaSU" ]]; then
+            FINASU_COMMIT=$(git -C "$GITHUB_WORKSPACE/FinaSU" rev-parse HEAD)
+            FINASU_URL="https://github.com/LyraVoid/FinaSU/commit/$FINASU_COMMIT"
+            echo "- **FinaSU**: [$FINASU_COMMIT]($FINASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
+          elif [[ "${{ inputs.finasu }}" == "true" ]]; then
+            echo "- **FinaSU**: enabled (commit unavailable)" >> build_summary.md
           else
-            echo "- **BakaSU**: not present" >> build_summary.md
+            BAKASU_DIR=""
+            if [ -d "$KERNEL_ROOT/BakaSU" ]; then
+              BAKASU_DIR="$KERNEL_ROOT/BakaSU"
+            elif [ -d "$KERNEL_ROOT/KernelSU" ]; then
+              BAKASU_DIR="$KERNEL_ROOT/KernelSU"
+            fi
+
+            if [ -n "$BAKASU_DIR" ]; then
+              cd "$BAKASU_DIR"
+              BAKASU_COMMIT=$(git rev-parse HEAD)
+              BAKASU_URL="https://github.com/Baka-SU/BakaSU/commit/$BAKASU_COMMIT"
+              echo "- **BakaSU**: [$BAKASU_COMMIT]($BAKASU_URL)" >> "$GITHUB_WORKSPACE/build_summary.md"
+              cd "$GITHUB_WORKSPACE"
+            else
+              echo "- **BakaSU**: not present" >> build_summary.md
+            fi
           fi
 
           if [ -d "$CONFIG/Baseband-guard" ]; then

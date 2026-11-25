@@ -1,149 +1,268 @@
 name: apply susfs patches
 description: apply susfs patches
 inputs:
- nomount:
-  description: 'nomount'
-  required: true
+  nomount:
+    description: 'nomount'
+    required: true
 
 runs:
   using: composite
   steps:
-   - name: clone susfs
-     shell: bash
-     run: |
-      SUSFS_BRANCH="gki-$ANDROID_VER-$KERNEL_VER"
-       git clone --depth 1 -b "$SUSFS_BRANCH" --single-branch https://gitlab.com/simonpunk/susfs4ksu.git
+    - name: clone susfs
+      shell: bash
+      run: |
+        SUSFS_BRANCH="gki-$ANDROID_VER-$KERNEL_VER"
+        git clone --depth 1 -b "$SUSFS_BRANCH" --single-branch https://gitlab.com/simonpunk/susfs4ksu.git
 
-      git config --global user.name "github-actions[bot]"
-      git config --global user.email "41898282+github-actions[bot]@://github.com"
-      
-      cd susfs4ksu
-      git fetch https://gitlab.com/pershoot/susfs4ksu.git gki-android14-6.1-dev
-      git log ..FETCH_HEAD --oneline -n 2 | awk '{print $1}' | tac | xargs git cherry-pick
-      
-      #cd susfs4ksu
-      #if [[ "$ANDROID_VER-$KERNEL_VER" == "android12-5.10" ]]; then
-        #COMMIT=ce2c2b2dea28c89d33f61af898cc18a93bf65ae9
-      #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android13-5.15" ]]; then
-       # COMMIT=529919fbc9f8aee6ee70eb3a8890ef33af0a109c
-      #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android14-6.1" ]]; then
-        #COMMIT=d1327b62e0854603cfc26e2226e0a993ec9b0656
-      #elif [[ "$ANDROID_VER-$KERNEL_VER" == "android15-6.6" ]]; then
-        #COMMIT=676d202ed2cc322a2f90bcb2b56bc4f6a864acb8
-      #fi
-      #git checkout "$COMMIT"
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "41898282+github-actions[bot]@://github.com"
 
-      SUSFS4KSU="$ROOT/susfs4ksu"
-      echo "SUSFS4KSU=$SUSFS4KSU" >> $GITHUB_ENV
-       
-   - name: Copy required files
-     shell: bash
-     run: |
-      # Apply SUSFS to kernel
-      cd "$COMMON"
-      cp "$SUSFS4KSU/kernel_patches/fs/"* ./fs/
-      cp "$SUSFS4KSU/kernel_patches/include/linux/"* ./include/linux/
-      cp "$SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch" ./          
+        cd susfs4ksu
+        git fetch https://gitlab.com/pershoot/susfs4ksu.git gki-android14-6.1-dev
+        git log ..FETCH_HEAD --oneline -n 2 | awk '{print $1}' | tac | xargs git cherry-pick
 
-   - name: prepare open.c for susfs patch
-     shell: bash
-     run: |
-      cd "$COMMON"
-      #Prepare open.c for susfs patching
-      sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/open.c
+        SUSFS4KSU="$ROOT/susfs4ksu"
+        echo "SUSFS4KSU=$SUSFS4KSU" >> $GITHUB_ENV
 
-   - name: prepare namei.c for susfs patch
-     if: env.BRANCH == 'SM-S928B-Oneui9'
-     shell: bash
-     run: |
-      cd "$COMMON"
-      #Prepare namei.c for susfs patching
-      # Delete security defex blocks
-      sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/namei.c
+    - name: Copy required files
+      shell: bash
+      run: |
+        cd "$COMMON"
+        cp "$SUSFS4KSU/kernel_patches/fs/"* ./fs/
+        cp "$SUSFS4KSU/kernel_patches/include/linux/"* ./include/linux/
+        cp "$SUSFS4KSU/kernel_patches/50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch" ./
 
-      # 2. Cleanup command: Find the empty while loop body and replace it with a semicolon
-      sed -i '/while (!(error = link_path_walk/,/^[[:space:]]*}[[:space:]]*$/{
-      s/) {$/)/
-      /^[[:space:]]*}[[:space:]]*$/c\
-      \t\t\t;
-      }' fs/namei.c
+        sed -i \
+          -e 's/bool susfs_is_log_enabled __read_mostly = true;/bool susfs_is_log_enabled __read_mostly = false;/g' \
+          -e 's/bool susfs_is_log_enabled = true;/bool susfs_is_log_enabled = false;/g' \
+          ./fs/susfs.c
+        grep -n "susfs_is_log_enabled" ./fs/susfs.c || true
 
-   - name: prepare namespace.c for susfs patching
-     shell: bash
-     run: |
-       cd "$COMMON"
-       #fake patch trace/hooks/blk.h for susfs patching for kernel 6.1 and 5.15
-       if [[ $KERNEL_VER == 6.1 || $KERNEL_VER == 5.15 ]]; then
-         sed -i '/#include "internal.h"/a #include <trace/hooks/blk.h>' fs/namespace.c
-       fi
+    - name: prepare open.c for susfs patch
+      shell: bash
+      run: |
+        cd "$COMMON"
+        sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/open.c
 
-       #move fslog.h for susfs patch for LOS
-       if [[ $BRANCH == *LOS* ]]; then
-        sed -i '/#include <linux\/fslog.h>/d; /#include <linux\/security.h>/a #include <linux/fslog.h>' fs/namespace.c
-        sed -i '/#include <linux\/cn_proc.h>/d; /#include <linux\/slab.h>/a #include <linux/cn_proc.h>' fs/proc/base.c
-       fi
-       
-       #remove kdp_ns section for susfs patch
-       sed -i '/copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;/,/#endif/ {
-        /#ifdef CONFIG_KDP_NS/,/#endif/ {
-           /#else/,/#endif/!d
-           /#else/d
-           /#endif/d
-        }
-       }' fs/namespace.c
-        
-   - name: apply susfs patch and fix if necessary
-     shell: bash
-     run: |
-      cd "$COMMON"
-      # Apply SUSFS core patch
-      patch -p1 < 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch || true
-      rm -rf 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch
+    - name: prepare namei.c for susfs patch
+      if: env.BRANCH == 'SM-S928B-Oneui9'
+      shell: bash
+      run: |
+        cd "$COMMON"
+        sed -i '/#ifdef CONFIG_SECURITY_DEFEX/,/^#endif/d' fs/namei.c
 
-      shopt -s nullglob
-      patches=("$KERNEL_PATCHES/samsung/$BRANCH"/*.patch)
-      
-      if [ ${#patches[@]} -gt 0 ]; then
-       echo "Patches found, applying..."
-       cp "${patches[@]}" ./
-       
-       # Fix SUSFS rejects
-        for p in *.patch; do
-          patch -p1 < "$p"
-          rm -f "$p"
-        done
-        shopt -u nullglob
-      else
-        echo "No patch file found, skipping"
-      fi
+        sed -i '/while (!(error = link_path_walk/,/^[[:space:]]*}[[:space:]]*$/{
+        s/) {$/)/
+        /^[[:space:]]*}[[:space:]]*$/c\
+        \t\t\t;
+        }' fs/namei.c
 
-        # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
-        # only exists on GKI branches that carry Google's page-size-migration
-        # feature (added to each android version's kernel/common branch at a
-        # different, sometime later, os_patch_level). Older os_patch_levels in
-        # our build matrix predate it, so fall back to a no-padding definition
-        # when the real header/macro isn't present. This is version-agnostic and
-        # a no-op wherever the real header already provides it.
+    - name: prepare namespace.c for susfs patching
+      shell: bash
+      run: |
+        cd "$COMMON"
+        if [[ $KERNEL_VER == 6.1 || $KERNEL_VER == 5.15 ]]; then
+          sed -i '/#include "internal.h"/a #include <trace/hooks/blk.h>' fs/namespace.c
+        fi
+
+        if [[ $BRANCH == *LOS* ]]; then
+         sed -i '/#include <linux\/fslog.h>/d; /#include <linux\/security.h>/a #include <linux/fslog.h>' fs/namespace.c
+         sed -i '/#include <linux\/cn_proc.h>/d; /#include <linux\/slab.h>/a #include <linux/cn_proc.h>' fs/proc/base.c
+        fi
+
+        sed -i '/copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;/,/#endif/ {
+         /#ifdef CONFIG_KDP_NS/,/#endif/ {
+            /#else/,/#endif/!d
+            /#else/d
+            /#endif/d
+         }
+        }' fs/namespace.c
+
+    - name: apply susfs patch and fix if necessary
+      shell: bash
+      run: |
+        cd "$COMMON"
+        patch -p1 < 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch || true
+        rm -rf 50_add_susfs_in_gki-$ANDROID_VER-$KERNEL_VER.patch
+
+        shopt -s nullglob
+        patches=("$KERNEL_PATCHES/samsung/$BRANCH"/*.patch)
+
+        if [ ${#patches[@]} -gt 0 ]; then
+         echo "Patches found, applying..."
+         cp "${patches[@]}" ./
+
+          for p in *.patch; do
+            patch -p1 < "$p"
+            rm -f "$p"
+          done
+          shopt -u nullglob
+        else
+          echo "No patch file found, skipping"
+        fi
+
         if grep -q 'VMA_PAD_START(' fs/proc/task_mmu.c && ! grep -qE '#include <linux/pgsize_migration(_inline)?\.h>|define VMA_PAD_START' fs/proc/task_mmu.c; then
           sed -i '1a #ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif' fs/proc/task_mmu.c
           echo "Added VMA_PAD_START fallback definition to fs/proc/task_mmu.c"
         fi
 
-        # Same story for __fold_filemap_fixup_entry(), declared in page_size_compat.h.
         if grep -q '__fold_filemap_fixup_entry' fs/proc/task_mmu.c && ! grep -q '#include <linux/page_size_compat.h>' fs/proc/task_mmu.c; then
           sed -i '/#include <linux\/pkeys.h>/a #include <linux/page_size_compat.h>' fs/proc/task_mmu.c
           echo "Added page_size_compat.h include to fs/proc/task_mmu.c"
         fi
-       
-   - name: undo namespace.c fake patch since trace/hooks/blk.h doesn't exist in kernel
-     shell: bash
-     run: |
-       cd "$COMMON"
-       if [[ $KERNEL_VER == 6.1 || $KERNEL_VER == 5.15 ]]; then
-        sed -i '/#include <trace\/hooks\/blk.h>/d' fs/namespace.c
-       fi
-       
-   - name: add ksu-susfs to config
-     shell: bash
-     run: |
-      "$COMMON/scripts/config" --file "$GKI_DEFCONFIG" --enable CONFIG_KSU_SUSFS
+
+    - name: Apply SELinux ksu/lsposed context hide patch
+      shell: bash
+      run: |
+        cd "$COMMON"
+        python3 - << 'PYEOF'
+        import re
+        from pathlib import Path
+
+        def has_substr(haystack: str, needle: str) -> bool:
+            return needle in haystack
+
+        def line_start_offset(text: str, pos: int) -> int:
+            nl = text.rfind("\n", 0, pos)
+            return 0 if nl == -1 else nl + 1
+
+        def insert_before_regex(path_str: str, pattern: str, block: str, label: str) -> None:
+            p = Path(path_str)
+            if not p.exists():
+                print(f"[warn] {path_str} missing, skipping {label}")
+                return
+            src = p.read_text(encoding="utf-8", errors="ignore")
+            if block.strip() in src:
+                print(f"[skip] {label} already present in {path_str}")
+                return
+            m = re.search(pattern, src, re.MULTILINE)
+            if not m:
+                print(f"[warn] Pattern not found in {path_str} for {label}, skipping")
+                return
+            idx = line_start_offset(src, m.start())
+            p.write_text(src[:idx] + block + src[idx:], encoding="utf-8", newline="\n")
+            print(f"[ok] Applied {label} to {path_str}")
+
+        selinuxfs_path = Path("security/selinux/selinuxfs.c")
+        if selinuxfs_path.exists():
+            selinuxfs = selinuxfs_path.read_text(encoding="utf-8", errors="ignore")
+
+            # 1. sel_write_context (match function definition, not forward declaration)
+            m_ctx = re.search(r"^static\s+ssize_t\s+sel_write_context\b", selinuxfs, re.MULTILINE)
+            if m_ctx:
+                ctx_section = selinuxfs[m_ctx.start():m_ctx.start() + 6000]
+                m1 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", ctx_section)
+                if m1:
+                    call_snippet = ctx_section[m1.start():m1.start() + 160]
+                    buf_match = re.search(r"\b(page|data|buf|con|str)\b", call_snippet)
+                    ctx_var = buf_match.group(1) if buf_match else None
+                else:
+                    ctx_var = None
+
+                if ctx_var:
+                    b1 = (
+                        "#ifdef CONFIG_KSU_SUSFS\n"
+                        f"\tif (current_uid().val >= 10000 &&\n"
+                        f"\t    (strstr({ctx_var}, \":ksu\") || strstr({ctx_var}, \":lsposed\"))) {{\n"
+                        "\t\tlength = -EINVAL;\n"
+                        "\t\tgoto out;\n"
+                        "\t}\n"
+                        "#endif\n"
+                    )
+                    if has_substr(selinuxfs, "strstr(") and "sel_write_context" in selinuxfs[m_ctx.start():m_ctx.start() + 6200]:
+                        print("[skip] sel_write_context hide already present")
+                    else:
+                        abs1 = line_start_offset(selinuxfs, m_ctx.start() + m1.start())
+                        selinuxfs = selinuxfs[:abs1] + b1 + selinuxfs[abs1:]
+                        print(f"[ok] Applied sel_write_context hide using '{ctx_var}'")
+                else:
+                    print("[warn] Could not resolve buffer variable in sel_write_context, skipping")
+            else:
+                print("[warn] sel_write_context definition not found, skipping")
+
+            # 2. sel_write_access context hide (match function definition)
+            m_acc = re.search(r"^static\s+ssize_t\s+sel_write_access\b", selinuxfs, re.MULTILINE)
+            if m_acc:
+                acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
+                m2 = re.search(r"\b(security_context_(?:str_)?to_sid|sidtab_context_to_sid)\s*\(", acc_section)
+                b2 = (
+                    "#ifdef CONFIG_KSU_SUSFS\n"
+                    "\tif (current_uid().val >= 10000 &&\n"
+                    "\t    (strstr(scon, \":ksu\") || strstr(tcon, \":ksu\") ||\n"
+                    "\t     strstr(scon, \":lsposed\") || strstr(tcon, \":lsposed\"))) {\n"
+                    "\t\tlength = -EINVAL;\n"
+                    "\t\tgoto out;\n"
+                    "\t}\n"
+                    "#endif\n"
+                )
+                if has_substr(selinuxfs, b2.strip()):
+                    print("[skip] sel_write_access context hide already present")
+                elif m2:
+                    abs2 = line_start_offset(selinuxfs, m_acc.start() + m2.start())
+                    selinuxfs = selinuxfs[:abs2] + b2 + selinuxfs[abs2:]
+                    print("[ok] Applied sel_write_access context hide")
+                else:
+                    print("[warn] SID lookup anchor not found in sel_write_access, skipping")
+
+                # 3. sel_write_access execmem mask
+                m_acc = re.search(r"^static\s+ssize_t\s+sel_write_access\b", selinuxfs, re.MULTILINE)
+                acc_section = selinuxfs[m_acc.start():m_acc.start() + 8000]
+                m3 = re.search(r"\bscnprintf\s*\(\s*buf\b", acc_section)
+                b3 = (
+                    "#ifdef CONFIG_KSU_SUSFS\n"
+                    "\tif (current_uid().val >= 10000 &&\n"
+                    "\t    strcmp(scon, \"u:r:system_server:s0\") == 0 &&\n"
+                    "\t    strcmp(tcon, \"u:r:system_server:s0\") == 0) {\n"
+                    "\t\tavd.allowed &= ~PROCESS__EXECMEM;\n"
+                    "\t}\n"
+                    "#endif\n"
+                )
+                if has_substr(selinuxfs, b3.strip()):
+                    print("[skip] sel_write_access execmem mask already present")
+                elif m3:
+                    abs3 = line_start_offset(selinuxfs, m_acc.start() + m3.start())
+                    selinuxfs = selinuxfs[:abs3] + b3 + selinuxfs[abs3:]
+                    print("[ok] Applied sel_write_access execmem mask")
+                else:
+                    print("[warn] scnprintf anchor not found in sel_write_access, skipping")
+            else:
+                print("[warn] sel_write_access definition not found, skipping")
+
+            selinuxfs_path.write_text(selinuxfs, encoding="utf-8", newline="\n")
+
+        # 4. selinux_setprocattr
+        b4 = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            "\tif (current_uid().val >= 10000 && value && size >= 4) {\n"
+            "\t\tconst char *v = (const char *)value;\n"
+            "\t\tsize_t i;\n"
+            "\t\tfor (i = 0; i + 3 < size; i++) {\n"
+            "\t\t\tif ((v[i] == ':' && v[i+1] == 'k' && v[i+2] == 's' && v[i+3] == 'u') ||\n"
+            "\t\t\t    (i + 7 < size && v[i] == ':' && v[i+1] == 'l' && v[i+2] == 's' &&\n"
+            "\t\t\t     v[i+3] == 'p' && v[i+4] == 'o' && v[i+5] == 's' && v[i+6] == 'e' && v[i+7] == 'd')) {\n"
+            "\t\t\t\treturn -EINVAL;\n"
+            "\t\t\t}\n"
+            "\t\t}\n"
+            "\t}\n"
+            "#endif\n"
+        )
+        insert_before_regex(
+            "security/selinux/hooks.c",
+            r"Obtain a SID for the context, if one was specified\.",
+            b4,
+            "selinux_setprocattr hide",
+        )
+        PYEOF
+
+    - name: undo namespace.c fake patch since trace/hooks/blk.h doesn't exist in kernel
+      shell: bash
+      run: |
+        cd "$COMMON"
+        if [[ $KERNEL_VER == 6.1 || $KERNEL_VER == 5.15 ]]; then
+         sed -i '/#include <trace\/hooks\/blk.h>/d' fs/namespace.c
+        fi
+
+    - name: add ksu-susfs to config
+      shell: bash
+      run: |
+        "$COMMON/scripts/config" --file "$GKI_DEFCONFIG" --enable CONFIG_KSU_SUSFS

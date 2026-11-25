@@ -1,0 +1,63 @@
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -587,6 +587,16 @@ static ssize_t sel_write_context(struct file *file, char __user *buf,
+ 	if (IS_ERR(page))
+ 		return PTR_ERR(page);
+ 
++#ifdef CONFIG_KSU_SUSFS
++	if (current_uid().val >= 10000 &&
++	    (strstr(page, ":ksu") || strstr(page, ":lsposed"))) {
++		length = -EINVAL;
++		goto out;
++	}
++#endif
++
+ 	length = security_context_to_sid(fsi->state, page, count, &sid,
+ 					 GFP_KERNEL);
+ 	if (length)
+@@ -944,6 +954,14 @@ static ssize_t sel_write_access(struct file *file, char __user *buf,
+ 	if (sscanf(page, "%s %s %hu", scon, tcon, &tclass) != 3)
+ 		goto out;
+ 
++#ifdef CONFIG_KSU_SUSFS
++	if (current_uid().val >= 10000 &&
++	    (strstr(scon, ":ksu") || strstr(tcon, ":ksu") ||
++	     strstr(scon, ":lsposed") || strstr(tcon, ":lsposed"))) {
++		goto out;
++	}
++#endif
++
+ 	length = security_context_to_sid(fsi->state, scon, strlen(scon) + 1,
+ 					 &ssid, GFP_KERNEL);
+ 	if (length)
+@@ -956,6 +974,15 @@ static ssize_t sel_write_access(struct file *file, char __user *buf,
+ 	security_compute_av_user(fsi->state, ssid, tsid, tclass, &avd);
+ 
++#ifdef CONFIG_KSU_SUSFS
++	if (current_uid().val >= 10000 &&
++	    strcmp(scon, "u:r:system_server:s0") == 0 &&
++	    strcmp(tcon, "u:r:system_server:s0") == 0) {
++		avd.allowed &= ~PROCESS__EXECMEM;
++	}
++#endif
++
+ 	length = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT,
+ 			   "%x %x %x %x %u %x",
+ 			   avd.allowed, 0xffffffff,
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -6531,6 +6531,14 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+ 	if (size == 0)
+ 		return -EINVAL;
+ 
++#ifdef CONFIG_KSU_SUSFS
++	if (current_uid().val >= 10000 && value &&
++	    (strnstr(value, ":ksu", size) ||
++	     strnstr(value, ":lsposed", size))) {
++		return -EINVAL;
++	}
++#endif
++
+ 	/* Obtain a SID for the context, if one was specified. */
+ 	if (size && str[0] && str[0] != '\n') {
+ 		if (str[size - 1] == '\n') {

@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     if: inputs.root_provider != 'clean' && inputs.include_managers == true
     steps:
-      - name: Download KSU Manager APKs
+      - name: Download KSU Manager APKs (arm64 only)
         env:
           ROOT_PROVIDER: ${{ inputs.root_provider }}
           GH_TOKEN: ${{ github.token }}
@@ -161,6 +161,18 @@ jobs:
           set -euo pipefail
           mkdir -p manager-apks
           cd manager-apks
+
+          is_arm64_apk() {
+            local name_lc
+            name_lc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+            if [[ "$name_lc" =~ (armeabi|v7a|x86_64|x86|riscv) ]]; then
+              return 1
+            fi
+            if [[ "$name_lc" =~ (arm64|aarch64) ]]; then
+              return 0
+            fi
+            return 0
+          }
 
           fetch_repo_apk() {
             local slug="$1"
@@ -182,13 +194,17 @@ jobs:
             local found=0
             while IFS=$'\t' read -r asset_name dl_url; do
               [ -n "$dl_url" ] || continue
+              if ! is_arm64_apk "$asset_name"; then
+                echo "Skipping non-arm64 APK asset: $asset_name"
+                continue
+              fi
               local safe_name="${prefix}-${tag}-${asset_name}"
-              echo "Downloading $asset_name from $slug -> $safe_name"
+              echo "Downloading arm64 APK $asset_name from $slug -> $safe_name"
               curl -fL "$dl_url" -o "$safe_name"
               found=1
             done < <(echo "$json" | jq -r '.assets[]? | select(.name | endswith(".apk")) | [.name, .browser_download_url] | @tsv')
 
-            [ "$found" -eq 1 ] || echo "No .apk assets found in release of $slug"
+            [ "$found" -eq 1 ] || echo "No arm64 .apk assets found in release of $slug"
           }
 
           if [[ "$ROOT_PROVIDER" == "both" || "$ROOT_PROVIDER" == "sukisu-nova" ]]; then
@@ -293,7 +309,7 @@ jobs:
                     /data/system/batterystats-daily.xml \
                     /data/system/batterystats.bin 2>/dev/null || true
               STAMP=$(date '+%Y-%m-%d %H:%M:%S')
-              printf '%s\n' "$STAMP" > "$LAST_RESET"
+              printf '%s\\n' "$STAMP" > "$LAST_RESET"
               echo "$(date '+%H:%M:%S') [WebUI] Reset batterystats" >> "$LOG"
           }
 
@@ -715,7 +731,7 @@ jobs:
             <div class="header">
               <div>
                 <div class="title">Normie WALT Tuner v1.10</div>
-                <div class="subtitle" id="kver">SM-S928B • Loading kernel...</div>
+                <div class="subtitle" id="kver">SM-S928B • Connecting to KSU bridge...</div>
               </div>
               <div class="badge" id="modeBadge">BATTERY</div>
             </div>
@@ -753,7 +769,7 @@ jobs:
             <div class="card">
               <div class="card-title">
                 <span>Live Kernel Telemetry</span>
-                <button class="mini-btn" onclick="refreshAll()">Refresh</button>
+                <button class="mini-btn" id="btnRefresh" onclick="refreshAll()">Refresh</button>
               </div>
               <div class="grid">
                 <div class="stat">
@@ -791,25 +807,72 @@ jobs:
           <script>
             const MOD = "/data/adb/modules/normie_walt_battery";
             let cbSeq = 0;
+            let execQueue = Promise.resolve();
+            let refreshing = false;
 
-            function ksuExec(cmd) {
+            function waitForKsuBridge(maxWaitMs = 4000) {
+              return new Promise((resolve) => {
+                if (window.ksu && typeof window.ksu.exec === "function") {
+                  resolve(true);
+                  return;
+                }
+                const start = Date.now();
+                const iv = setInterval(() => {
+                  if (window.ksu && typeof window.ksu.exec === "function") {
+                    clearInterval(iv);
+                    resolve(true);
+                  } else if (Date.now() - start >= maxWaitMs) {
+                    clearInterval(iv);
+                    resolve(false);
+                  }
+                }, 80);
+              });
+            }
+
+            function runSingleExec(cmd, timeoutMs = 4500) {
               return new Promise((resolve) => {
                 if (!window.ksu || typeof window.ksu.exec !== "function") {
                   resolve({ errno: -1, stdout: "", stderr: "ksu API unavailable" });
                   return;
                 }
+                let settled = false;
                 const cbName = "__ksu_cb_" + (++cbSeq);
+                const timer = setTimeout(() => {
+                  if (settled) return;
+                  settled = true;
+                  try { delete window[cbName]; } catch (_) {}
+                  resolve({ errno: -2, stdout: "", stderr: "exec timeout" });
+                }, timeoutMs);
+
                 window[cbName] = (errno, stdout, stderr) => {
-                  delete window[cbName];
-                  resolve({ errno, stdout: (stdout || "").trim(), stderr: (stderr || "").trim() });
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timer);
+                  try { delete window[cbName]; } catch (_) {}
+                  resolve({
+                    errno: Number(errno || 0),
+                    stdout: String(stdout || "").trim(),
+                    stderr: String(stderr || "").trim()
+                  });
                 };
+
                 try {
                   window.ksu.exec(cmd, "{}", cbName);
                 } catch (e) {
-                  delete window[cbName];
+                  if (settled) return;
+                  settled = true;
+                  clearTimeout(timer);
+                  try { delete window[cbName]; } catch (_) {}
                   resolve({ errno: -1, stdout: "", stderr: String(e) });
                 }
               });
+            }
+
+            // Serialize KSU bridge calls so WebView/IPC never stalls under concurrent requests
+            function ksuExec(cmd, timeoutMs = 4500) {
+              const task = execQueue.then(() => runSingleExec(cmd, timeoutMs));
+              execQueue = task.catch(() => {});
+              return task;
             }
 
             function toast(msg) {
@@ -844,7 +907,7 @@ jobs:
               );
               renderMode(mode);
               toast("Switched to " + mode.toUpperCase() + " profile");
-              setTimeout(refreshAll, 1300);
+              setTimeout(refreshAll, 1000);
             }
 
             async function resetBatteryStatsConfirmed() {
@@ -856,7 +919,8 @@ jobs:
                 "rm -f /data/system/batterystats-checkin.bin /data/system/batterystats-daily.xml /data/system/batterystats.bin 2>/dev/null || true; " +
                 "STAMP=$(date '+%Y-%m-%d %H:%M:%S'); " +
                 "printf '%s\\n' \"$STAMP\" > " + MOD + "/last_stats_reset.txt; " +
-                "echo \"$(date '+%H:%M:%S') [WebUI] Reset batterystats\" >> " + MOD + "/walt.log"
+                "echo \"$(date '+%H:%M:%S') [WebUI] Reset batterystats\" >> " + MOD + "/walt.log",
+                7000
               );
               toast("Battery stats reset");
               await refreshAll();
@@ -864,38 +928,92 @@ jobs:
             }
 
             async function refreshAll() {
-              const [kver, mode, statsStatus, lastReset, walt, thp, uclamp, gpu, ufs, wl, log] = await Promise.all([
-                ksuExec("uname -r"),
-                ksuExec("cat " + MOD + "/mode.conf 2>/dev/null || echo battery"),
-                ksuExec("dumpsys batterystats 2>/dev/null | grep -m 1 -E 'Start clock time|Elapsed realtime|Reset' || echo 'Active'"),
-                ksuExec("cat " + MOD + "/last_stats_reset.txt 2>/dev/null || echo Never"),
-                ksuExec("cat /proc/sys/walt/sched_upmigrate 2>/dev/null || echo N/A"),
-                ksuExec("cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo N/A"),
-                ksuExec("cat /proc/sys/kernel/sched_util_clamp_min_rt_default 2>/dev/null || echo N/A"),
-                ksuExec("cat /sys/class/kgsl/kgsl-3d0/idle_timer 2>/dev/null || echo N/A"),
-                ksuExec("cat /sys/block/sda/queue/scheduler 2>/dev/null || echo N/A"),
-                ksuExec("cat /sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker 2>/dev/null || echo N/A"),
-                ksuExec("tail -n 12 " + MOD + "/walt.log 2>/dev/null || echo 'No log entries yet'")
-              ]);
+              if (refreshing) return;
+              refreshing = true;
+              const btnRef = document.getElementById("btnRefresh");
+              if (btnRef) btnRef.disabled = true;
 
-              if (kver.stdout) document.getElementById("kver").textContent = kver.stdout;
-              renderMode(mode.stdout === "stock" ? "stock" : "battery");
+              try {
+                const ready = await waitForKsuBridge(4000);
+                if (!ready) {
+                  document.getElementById("kver").textContent = "SM-S928B • KSU WebUI JS bridge not detected";
+                  document.getElementById("valStatsStatus").textContent = "Bridge N/A";
+                  document.getElementById("logBox").textContent = "Open inside KernelSU / SukiSU / FinaSU / BakaSU WebUI.";
+                  return;
+                }
 
-              document.getElementById("valStatsStatus").textContent = statsStatus.stdout || "Active";
-              document.getElementById("valLastReset").textContent = lastReset.stdout || "Never";
+                // Single batched shell command avoids flooding the KSU JS bridge with 11 separate calls
+                const batchCmd = [
+                  "echo '===KVER==='; uname -r 2>/dev/null || true",
+                  "echo '===MODE==='; cat " + MOD + "/mode.conf 2>/dev/null || echo battery",
+                  "echo '===LASTRESET==='; cat " + MOD + "/last_stats_reset.txt 2>/dev/null || echo Never",
+                  "echo '===STATSBIN==='; if [ -e /data/system/batterystats.bin ]; then echo Active; else echo Clean/Pending; fi",
+                  "echo '===WALT==='; cat /proc/sys/walt/sched_upmigrate 2>/dev/null || echo N/A",
+                  "echo '===THP==='; cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo N/A",
+                  "echo '===UCLAMP==='; cat /proc/sys/kernel/sched_util_clamp_min_rt_default 2>/dev/null || echo N/A",
+                  "echo '===GPU==='; cat /sys/class/kgsl/kgsl-3d0/idle_timer 2>/dev/null || echo N/A",
+                  "echo '===UFS==='; cat /sys/block/sda/queue/scheduler 2>/dev/null || echo N/A",
+                  "echo '===WL==='; cat /sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker 2>/dev/null || echo N/A",
+                  "echo '===LOG==='; tail -n 12 " + MOD + "/walt.log 2>/dev/null || echo 'No log entries yet'"
+                ].join("; ");
 
-              document.getElementById("valWalt").textContent = (walt.stdout || "N/A").replace(/\\s+/g, " ");
-              const thpMatch = (thp.stdout || "").match(/\\[([^\\]]+)\\]/);
-              document.getElementById("valThp").textContent = thpMatch ? thpMatch[1] : (thp.stdout || "N/A");
-              document.getElementById("valUclamp").textContent = uclamp.stdout || "N/A";
-              document.getElementById("valGpu").textContent = gpu.stdout ? gpu.stdout + " ms" : "N/A";
-              const ufsMatch = (ufs.stdout || "").match(/\\[([^\\]]+)\\]/);
-              document.getElementById("valUfs").textContent = ufsMatch ? ufsMatch[1] : (ufs.stdout || "N/A");
-              document.getElementById("valWl").textContent = wl.stdout ? wl.stdout.split(";").length + " blocked" : "0 (Stock)";
-              document.getElementById("logBox").textContent = log.stdout || "No log entries yet";
+                const res = await ksuExec(batchCmd, 5000);
+                if (res.errno !== 0 && !res.stdout) {
+                  document.getElementById("kver").textContent = "SM-S928B • Bridge error (" + (res.stderr || res.errno) + ")";
+                  return;
+                }
+
+                const sections = {};
+                let cur = null;
+                for (const line of (res.stdout || "").split(/\r?\n/)) {
+                  const m = line.match(/^===([A-Z0-9]+)===$/);
+                  if (m) {
+                    cur = m[1];
+                    sections[cur] = [];
+                  } else if (cur) {
+                    sections[cur].push(line);
+                  }
+                }
+                const getSec = (k, fb = "") => (sections[k] ? sections[k].join("\n").trim() : fb);
+
+                const kver = getSec("KVER");
+                const mode = getSec("MODE", "battery");
+                const lastReset = getSec("LASTRESET", "Never");
+                const statsBin = getSec("STATSBIN", "Active");
+                const walt = getSec("WALT", "N/A");
+                const thp = getSec("THP", "N/A");
+                const uclamp = getSec("UCLAMP", "N/A");
+                const gpu = getSec("GPU", "N/A");
+                const ufs = getSec("UFS", "N/A");
+                const wl = getSec("WL", "N/A");
+                const log = getSec("LOG", "No log entries yet");
+
+                if (kver) document.getElementById("kver").textContent = kver;
+                renderMode(mode === "stock" ? "stock" : "battery");
+
+                document.getElementById("valStatsStatus").textContent = statsBin || "Active";
+                document.getElementById("valLastReset").textContent = lastReset || "Never";
+
+                document.getElementById("valWalt").textContent = (walt || "N/A").replace(/\s+/g, " ");
+                const thpMatch = (thp || "").match(/\[([^\]]+)\]/);
+                document.getElementById("valThp").textContent = thpMatch ? thpMatch[1] : (thp || "N/A");
+                document.getElementById("valUclamp").textContent = uclamp || "N/A";
+                document.getElementById("valGpu").textContent = gpu && gpu !== "N/A" ? gpu + " ms" : "N/A";
+                const ufsMatch = (ufs || "").match(/\[([^\]]+)\]/);
+                document.getElementById("valUfs").textContent = ufsMatch ? ufsMatch[1] : (ufs || "N/A");
+                document.getElementById("valWl").textContent = wl && wl !== "N/A" ? wl.split(";").filter(Boolean).length + " blocked" : "0 (Stock)";
+                document.getElementById("logBox").textContent = log || "No log entries yet";
+              } finally {
+                refreshing = false;
+                if (btnRef) btnRef.disabled = false;
+              }
             }
 
-            refreshAll();
+            if (document.readyState === "loading") {
+              document.addEventListener("DOMContentLoaded", refreshAll);
+            } else {
+              refreshAll();
+            }
           </script>
           </body>
           </html>
@@ -1196,7 +1314,7 @@ jobs:
 
           if compgen -G "$GITHUB_WORKSPACE/*.apk" >/dev/null; then
           cat <<'EOF' >> release_body.md
-          -> Kernel Manager APKs Attached - Matching manager APK(s) for the selected root variant(s) are included in the release assets
+          -> Kernel Manager APKs Attached - Matching arm64 manager APK(s) for the selected root variant(s) are included in the release assets
           EOF
           fi
 

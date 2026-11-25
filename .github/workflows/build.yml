@@ -1,6 +1,6 @@
 name: Kernel Build Process
 permissions:
-  contents: write
+  contents: read
   actions: write
 
 on:
@@ -121,7 +121,7 @@ jobs:
           testing: false
 
       - name: Setup more Swap (for LTO)
-        uses: pierotofy/set-swap-space@master
+        uses: pierotofy/set-swap-space@fc79b3f67fa8a838184ce84a674ca12238d2c761
         with:
           swap-size-gb: 25
 
@@ -294,13 +294,29 @@ jobs:
 
       - name: Add FinaSU
         if: inputs.finasu == 'true'
+        env:
+          FINASU_REF: ${{ vars.FINASU_REF }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
           cd "$KERNEL_ROOT"
           rm -rf drivers/kernelsu KernelSU BakaSU FinaSU SukiSU-Nova "$GITHUB_WORKSPACE/FinaSU"
-          git clone --depth=1 https://github.com/LyraVoid/FinaSU.git "$GITHUB_WORKSPACE/FinaSU"
+          # Kernel and manager must come from the same release. Use FINASU_REF if set (a tag, or "master"
+          # to track development), otherwise the latest published release.
+          REF="${FINASU_REF:-}"
+          if [ -z "$REF" ]; then
+            REF=$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest" | jq -r '.tag_name // empty' || true)
+          fi
+          if [ -n "$REF" ]; then
+            echo "Cloning FinaSU at $REF"
+            git clone --depth=1 --branch "$REF" https://github.com/LyraVoid/FinaSU.git "$GITHUB_WORKSPACE/FinaSU"
+          else
+            echo "::warning::Could not resolve a FinaSU release tag; cloning default branch"
+            git clone --depth=1 https://github.com/LyraVoid/FinaSU.git "$GITHUB_WORKSPACE/FinaSU"
+          fi
 
           if [ -f "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" ]; then
             bash "$GITHUB_WORKSPACE/FinaSU/kernel/setup.sh" --dir "$GITHUB_WORKSPACE/FinaSU"
@@ -334,6 +350,99 @@ jobs:
           if [ -f "drivers/Kconfig" ] && ! grep -q "drivers/kernelsu/Kconfig" "drivers/Kconfig"; then
             sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' "drivers/Kconfig"
           fi
+
+      - name: Fix FinaSU version and manager signature
+        if: inputs.finasu == 'true'
+        env:
+          FINASU_REF: ${{ vars.FINASU_REF }}
+          GH_TOKEN: ${{ github.token }}
+          SIG_SIZE_OVERRIDE: ${{ vars.FINASU_SIG_SIZE }}
+          SIG_HASH_OVERRIDE: ${{ vars.FINASU_SIG_HASH }}
+        run: |
+          set -euo pipefail
+          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
+          KB="$KERNEL_ROOT/drivers/kernelsu/Kbuild"
+          R="$GITHUB_WORKSPACE/FinaSU"
+          [ -f "$KB" ] || { echo "::error::$KB not found"; exit 1; }
+
+          # 1) Version: Kbuild falls back to 16 / v0.0.0-00000000@unknown when it cannot see FinaSU's git
+          #    history (the copy lives inside the kernel repo). Compute the real values from the checkout.
+          if [ -f "$R/.git/shallow" ]; then git -C "$R" fetch --unshallow --tags 2>/dev/null || true; fi
+          COUNT=$(git -C "$R" rev-list --count HEAD)
+          SHA=$(git -C "$R" rev-parse --short=8 HEAD)
+          TAG=$(git -C "$R" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)
+          BRANCH=$(git -C "$R" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+          VER=$((30000 + COUNT))
+          sed -i -E "s/-DKSU_VERSION=16/-DKSU_VERSION=${VER}/" "$KB"
+          sed -i -E "s|^KSU_VERSION_FULL := v0\.0\.0-00000000@unknown|KSU_VERSION_FULL := v${TAG:-unknown}-${SHA}@${BRANCH}|" "$KB"
+          echo "FinaSU version set to ${VER} (v${TAG:-unknown}-${SHA}@${BRANCH})"
+
+          # 2) Manager signature: the kernel only trusts a manager APK whose signing certificate matches
+          #    KSU_EXPECTED_SIZE/HASH. Read them straight from the release APK. The repo variables
+          #    FINASU_SIG_SIZE and FINASU_SIG_HASH, if both set, override this (e.g. for your own re-signed manager).
+          if [ -n "${SIG_SIZE_OVERRIDE:-}" ] && [ -n "${SIG_HASH_OVERRIDE:-}" ]; then
+            SIG_SIZE="$SIG_SIZE_OVERRIDE"; SIG_HASH="$SIG_HASH_OVERRIDE"
+            echo "Using manager signature from repository variables"
+          else
+            api() { curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$1"; }
+            REL=""
+            if [ -n "${FINASU_REF:-}" ]; then REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/tags/${FINASU_REF}" 2>/dev/null || true); fi
+            if [ -z "$REL" ] || ! echo "$REL" | jq -e '.assets' >/dev/null 2>&1; then
+              REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest")
+            fi
+            APK_URL=$(echo "$REL" | jq -r '[.assets[] | select(.name | endswith(".apk"))] | (map(select(.name | test("release"))) + .)[0].browser_download_url // empty')
+            [ -n "$APK_URL" ] || { echo "::error::No FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
+            echo "Reading manager signature from $APK_URL"
+            curl -fsSL -o "$RUNNER_TEMP/finasu-manager.apk" "$APK_URL"
+            cat > "$RUNNER_TEMP/apk_cert.py" << 'PYEOF'
+          import hashlib, struct, sys
+
+          def u32(b, o): return struct.unpack_from("<I", b, o)[0]
+          def u64(b, o): return struct.unpack_from("<Q", b, o)[0]
+
+          def signing_block(d):
+              i = d.rfind(b"PK\x05\x06")
+              if i < 0: raise SystemExit("no EOCD")
+              cd_off = u32(d, i + 16)
+              if d[cd_off - 16:cd_off] != b"APK Sig Block 42": raise SystemExit("no APK signing block (v1-only APK?)")
+              size = u64(d, cd_off - 24)
+              return d[cd_off - size - 8: cd_off - 24]  # id-value pairs region (after leading size field)
+
+          def pairs(blk):
+              o = 8  # skip leading size field
+              while o + 12 <= len(blk):
+                  n = u64(blk, o); pid = u32(blk, o + 8)
+                  yield pid, blk[o + 12: o + 8 + n]
+                  o += 8 + n
+
+          def lp(b, o):  # length-prefixed -> (data, next_offset)
+              n = u32(b, o); return b[o + 4:o + 4 + n], o + 4 + n
+
+          d = open(sys.argv[1], "rb").read()
+          certs = []
+          for pid, val in pairs(signing_block(d)):
+              if pid not in (0x7109871a, 0xf05368c0): continue
+              signers, _ = lp(val, 0); o = 0
+              while o < len(signers):
+                  signer, o = lp(signers, o)
+                  signed, _ = lp(signer, 0)
+                  _digests, p = lp(signed, 0)
+                  cert_seq, _ = lp(signed, p)
+                  c = 0
+                  while c < len(cert_seq):
+                      cert, c = lp(cert_seq, c)
+                      certs.append(cert)
+          if not certs: raise SystemExit("no certificates found")
+          cert = certs[0]
+          print(f"0x{len(cert):04x} {hashlib.sha256(cert).hexdigest()}")
+          PYEOF
+            read -r SIG_SIZE SIG_HASH < <(python3 "$RUNNER_TEMP/apk_cert.py" "$RUNNER_TEMP/finasu-manager.apk")
+          fi
+          [[ "$SIG_SIZE" =~ ^0x[0-9a-fA-F]+$ ]] && [[ "$SIG_HASH" =~ ^[0-9a-fA-F]{64}$ ]] || { echo "::error::Invalid signature values: size='$SIG_SIZE' hash='$SIG_HASH'"; exit 1; }
+          sed -i -E "s/^(KSU_EXPECTED_SIZE := ).*/\1${SIG_SIZE}/" "$KB"
+          sed -i -E "s/^(KSU_EXPECTED_HASH := ).*/\1${SIG_HASH}/" "$KB"
+          echo "Manager signature: size=${SIG_SIZE} sha256=${SIG_HASH}"
+          grep -n -E "KSU_EXPECTED_SIZE :=|KSU_EXPECTED_HASH :=|-DKSU_VERSION=|KSU_VERSION_FULL :=" "$KB" || true
 
       - name: Add SUSFS
         if: inputs.susfs == 'true'
@@ -482,6 +591,24 @@ jobs:
           fi
           echo "Verified built kernel image: $IMAGE_FOUND"
 
+      - name: Verify root driver is present in the kernel image
+        if: env.ROOT_PROVIDER != 'clean'
+        run: |
+          IMAGE=$(find "$CONFIG" -maxdepth 6 -type f -name "Image" ! -path "*.git*" | head -n 1)
+          [ -n "$IMAGE" ] || { echo "::error::No Image to inspect"; exit 1; }
+          if ! grep -a -q -i -E "kernelsu|finasu|sukisu|bakasu" "$IMAGE"; then
+            echo "::warning::No root-manager strings found in $IMAGE (can be normal when SUSFS hides symbols)"
+          fi
+          if grep -a -q "v0.0.0-00000000@unknown" "$IMAGE"; then
+            echo "::error::Root driver was built with the fallback version v0.0.0-00000000@unknown; its manager will not detect it."
+            [[ "$ROOT_PROVIDER" == "finasu" ]] && exit 1
+          fi
+          CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
+          if [ -n "$CFG" ]; then
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL not found in $CFG"
+            grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
+          fi
+
       - name: clean up ccache
         if: inputs.cache == 'true' && inputs.build_type == 'make'
         run: ccache -c
@@ -546,7 +673,11 @@ jobs:
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
           echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
-          echo "- **BBG**: Installed" >> build_summary.md
+          if [[ "${{ inputs.bbg }}" == "true" ]]; then
+            echo "- **BBG**: Enabled" >> build_summary.md
+          else
+            echo "- **BBG**: Disabled" >> build_summary.md
+          fi
           echo "" >> build_summary.md
 
           if [[ "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" && -d "$GITHUB_WORKSPACE/SukiSU-Nova" ]]; then

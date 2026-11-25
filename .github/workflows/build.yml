@@ -374,10 +374,10 @@ jobs:
             api() { curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$1"; }
             REL=""
             if [ -n "${FINASU_REF:-}" ]; then REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/tags/${FINASU_REF}" 2>/dev/null || true); fi
-            if [ -z "$REL" ] || ! echo "$REL" | jq -e '.assets' >/dev/null 2>&1; then
+            if [ -z "$REL" ] || ! printf '%s\n' "$REL" | jq -e '.assets' >/dev/null 2>&1; then
               REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest")
             fi
-            APK_URL=$(echo "$REL" | jq -r '[.assets[] | select((.name | endswith(".apk")) and ((.name | test("arm64|aarch64"; "i")) or ((.name | test("armeabi|v7a|x86|riscv"; "i")) | not))] | (map(select(.name | test("release"; "i"))) + .)[0].browser_download_url // empty')
+            APK_URL=$(printf '%s\n' "$REL" | jq -r '[.assets[] | select((.name | endswith(".apk")) and ((.name | test("arm64"; "i")) or (.name | test("aarch64"; "i")) or (((.name | test("armeabi"; "i")) or (.name | test("v7a"; "i")) or (.name | test("x86"; "i")) or (.name | test("riscv"; "i"))) | not))] | (map(select(.name | test("release"; "i"))) + .)[0].browser_download_url // empty')
             [ -n "$APK_URL" ] || { echo "::error::No arm64 FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
             echo "Reading manager signature from $APK_URL"
             curl -fsSL -o "$RUNNER_TEMP/finasu-manager.apk" "$APK_URL"

@@ -211,39 +211,33 @@ jobs:
 
       - name: Add SukiSU-Nova
         if: inputs.sukisu_nova == 'true' || env.ROOT_PROVIDER == 'sukisu-nova'
+        timeout-minutes: 5
+        env:
+          GIT_TERMINAL_PROMPT: "0"
+          GCM_INTERACTIVE: "never"
         run: |
+          set -euo pipefail
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
+          mkdir -p "$KERNEL_ROOT"
           cd "$KERNEL_ROOT"
           rm -rf drivers/kernelsu KernelSU BakaSU FinaSU SukiSU-Nova "$GITHUB_WORKSPACE/SukiSU-Nova"
-          git clone --depth=1 https://github.com/SukiSU-Nova/SukiSU-Nova.git "$GITHUB_WORKSPACE/SukiSU-Nova"
+          git -c core.askPass=true clone --depth=1 --single-branch https://github.com/SukiSU-Nova/SukiSU-Nova.git "$GITHUB_WORKSPACE/SukiSU-Nova"
 
-          if [ -f "$GITHUB_WORKSPACE/SukiSU-Nova/kernel/setup.sh" ]; then
-            bash "$GITHUB_WORKSPACE/SukiSU-Nova/kernel/setup.sh"
-          elif [ -f "$GITHUB_WORKSPACE/SukiSU-Nova/setup.sh" ]; then
-            bash "$GITHUB_WORKSPACE/SukiSU-Nova/setup.sh"
+          mkdir -p drivers/kernelsu
+          if [ -d "$GITHUB_WORKSPACE/SukiSU-Nova/kernel" ]; then
+            cp -a "$GITHUB_WORKSPACE/SukiSU-Nova/kernel/." "drivers/kernelsu/"
           else
-            mkdir -p drivers/kernelsu
-            if [ -d "$GITHUB_WORKSPACE/SukiSU-Nova/kernel" ]; then
-              cp -a "$GITHUB_WORKSPACE/SukiSU-Nova/kernel/." "drivers/kernelsu/"
-            else
-              cp -a "$GITHUB_WORKSPACE/SukiSU-Nova/." "drivers/kernelsu/"
-            fi
-          fi
-
-          if [ -d "$GITHUB_WORKSPACE/SukiSU-Nova/.git" ] && [ -f "$GITHUB_WORKSPACE/SukiSU-Nova/.git/shallow" ]; then
-            git -C "$GITHUB_WORKSPACE/SukiSU-Nova" fetch --unshallow 2>/dev/null || true
+            cp -a "$GITHUB_WORKSPACE/SukiSU-Nova/." "drivers/kernelsu/"
           fi
 
           if [ -L "drivers/kernelsu" ]; then
             TARGET=$(readlink -f "drivers/kernelsu")
             rm -f "drivers/kernelsu"
             cp -a "$TARGET" "drivers/kernelsu"
-            echo "Materialized SukiSU-Nova drivers/kernelsu from $TARGET"
-          elif [ -d "drivers/kernelsu" ] && [ ! -f "drivers/kernelsu/Kbuild" ]; then
-            cp -a "$GITHUB_WORKSPACE/SukiSU-Nova/kernel/." "drivers/kernelsu/" 2>/dev/null || true
           fi
+          echo "Materialized SukiSU-Nova drivers/kernelsu"
 
           if [ -f "drivers/Makefile" ] && ! grep -q "kernelsu" "drivers/Makefile"; then
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "drivers/Makefile"

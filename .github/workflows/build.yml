@@ -483,13 +483,18 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
+            sed -i '/^CONFIG_KPM=y/d' "$DEFCONFIG"
             if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
               if [[ "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
-                grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+                if grep -rnE "^\s*config\s+KPM\b" "$KERNEL_ROOT/drivers/kernelsu" "$GITHUB_WORKSPACE/SukiSU-Nova" 2>/dev/null | grep -q .; then
+                  grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+                else
+                  echo "Note: config KPM not found in SukiSU-Nova Kconfig; skipping CONFIG_KPM=y"
+                fi
               fi
             fi
           fi

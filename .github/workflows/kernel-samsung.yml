@@ -30,6 +30,14 @@ on:
         required: false
         type: string
         default: "true"
+      sukisu_nova:
+        required: false
+        type: string
+        default: "false"
+      finasu:
+        required: false
+        type: string
+        default: "false"
       droidspace:
         required: true
         type: string
@@ -68,7 +76,16 @@ jobs:
           import json, os
 
           target_in = "${{ inputs.oneui_targets }}"
-          root_in = "${{ inputs.root_provider }}" or ("bakasu" if "${{ inputs.bakasu }}" == "true" else "clean")
+          root_in = "${{ inputs.root_provider }}"
+          if not root_in:
+              if "${{ inputs.sukisu_nova }}" == "true":
+                  root_in = "sukisu-nova"
+              elif "${{ inputs.finasu }}" == "true":
+                  root_in = "finasu"
+              elif "${{ inputs.bakasu }}" == "true":
+                  root_in = "bakasu"
+              else:
+                  root_in = "clean"
 
           if target_in == "all":
               branches = ["SM-S928B-Oneui9", "SM-S928B-Oneui8.5", "SM-S928B-Oneui8"]
@@ -76,8 +93,8 @@ jobs:
               branches = [target_in]
 
           if root_in == "both":
-              roots = ["bakasu", "finasu"]
-          elif root_in in ("bakasu", "finasu", "clean"):
+              roots = ["sukisu-nova", "bakasu", "finasu"]
+          elif root_in in ("sukisu-nova", "bakasu", "finasu", "clean"):
               roots = [root_in]
           else:
               roots = ["bakasu"]
@@ -87,6 +104,7 @@ jobs:
                   "branch": branch,
                   "build_type": "Bazel",
                   "root_provider": root,
+                  "sukisu_nova": "true" if root == "sukisu-nova" else "false",
                   "bakasu": "true" if root == "bakasu" else "false",
                   "finasu": "true" if root == "finasu" else "false",
               }
@@ -112,6 +130,7 @@ jobs:
       branch: ${{ matrix.branch }}
       build_type: ${{ matrix.build_type }}
       root_provider: ${{ matrix.root_provider }}
+      sukisu_nova: ${{ matrix.sukisu_nova }}
       bakasu: ${{ matrix.bakasu }}
       finasu: ${{ matrix.finasu }}
       susfs: ${{ inputs.susfs }}

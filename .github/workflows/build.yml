@@ -377,7 +377,31 @@ jobs:
             if [ -z "$REL" ] || ! printf '%s\n' "$REL" | jq -e '.assets' >/dev/null 2>&1; then
               REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest")
             fi
-            APK_URL=$(printf '%s\n' "$REL" | jq -r '[.assets[] | select((.name | endswith(".apk")) and ((.name | test("arm64"; "i")) or (.name | test("aarch64"; "i")) or (((.name | test("armeabi"; "i")) or (.name | test("v7a"; "i")) or (.name | test("x86"; "i")) or (.name | test("riscv"; "i"))) | not))] | (map(select(.name | test("release"; "i"))) + .)[0].browser_download_url // empty')
+            APK_URL=$(python3 -c '
+          import json, re, sys
+
+          data = json.load(sys.stdin)
+          assets = data.get("assets") or []
+          apks = [a.get("browser_download_url", "") for a in assets if isinstance(a, dict) and str(a.get("name", "")).endswith(".apk")]
+
+          def score(url):
+              name = url.rsplit("/", 1)[-1].lower()
+              is_arm64 = bool(re.search(r"arm64|aarch64", name))
+              has_other_arch = bool(re.search(r"armeabi|v7a|x86|riscv", name))
+              if not (is_arm64 or not has_other_arch):
+                  return None
+              is_release = 1 if "release" in name else 0
+              return (is_release, 1 if is_arm64 else 0)
+
+          ranked = []
+          for u in apks:
+              s = score(u)
+              if s is not None and u:
+                  ranked.append((s, u))
+
+          ranked.sort(key=lambda item: item[0], reverse=True)
+          print(ranked[0][1] if ranked else "")
+          ' <<< "$REL")
             [ -n "$APK_URL" ] || { echo "::error::No arm64 FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
             echo "Reading manager signature from $APK_URL"
             curl -fsSL -o "$RUNNER_TEMP/finasu-manager.apk" "$APK_URL"

@@ -20,7 +20,6 @@ runs:
         cd "$CONFIG"
         echo "Building the kernel..."
 
-        # Prepare kernel tree for Bazel sandbox (SukiSU-Nova/BakaSU/FinaSU, symlinks, battery optimizations, stealth, and Normie-Kernel branding)
         KERNEL_DIR="${KERNEL_ROOT:-${COMMON:-$PWD/kernel_platform/common}}"
         if [ -d "$KERNEL_DIR" ]; then
           # 1. Materialize out-of-tree symlinks into real directories for Bazel processwrapper-sandbox
@@ -207,7 +206,7 @@ runs:
             EFFECTIVE_LTO="full"
           fi
 
-          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" << 'PYEOF'
+          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" "${ROOT_PROVIDER:-}" << 'PYEOF'
         import os, pathlib, re, sys
 
         roots = []
@@ -222,6 +221,7 @@ runs:
 
         lto_mode = sys.argv[3]
         kp_dir = pathlib.Path(sys.argv[4])
+        root_provider = sys.argv[5]
 
         base_config_lines = [
             'CONFIG_LOCALVERSION="-Normie-Kernel"',
@@ -290,6 +290,13 @@ runs:
             'CONFIG_DEFAULT_NET_SCH="fq"',
             "CONFIG_WIREGUARD=y",
         ]
+
+        if root_provider == "sukisu-nova":
+            base_config_lines += [
+                "CONFIG_KPM=y",
+                "CONFIG_KALLSYMS=y",
+                "CONFIG_KALLSYMS_ALL=y",
+            ]
 
         if lto_mode == "full":
             base_config_lines += [
@@ -383,11 +390,18 @@ runs:
             print(f"Configuring kernel tree: {root}")
             config_lines = list(base_config_lines)
 
-            # Only inject KSU and SUSFS symbols into kernel trees containing drivers/kernelsu/Kconfig (common, not msm-kernel)
-            ksu_kc = root / "drivers/kernelsu/Kconfig"
-            if ksu_kc.is_file():
-                ktxt = ksu_kc.read_text(encoding="utf-8", errors="ignore")
+            ksu_kcs = [
+                p for p in (
+                    root / "drivers/kernelsu/Kconfig",
+                    root / "SukiSU-Nova/kernel/Kconfig",
+                )
+                if p.is_file()
+            ]
+            if ksu_kcs:
+                ktxt = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ksu_kcs)
                 config_lines.append("CONFIG_KSU=y")
+                if root_provider == "sukisu-nova" and re.search(r"^\s*config\s+KSU_SUSFS\b", ktxt, flags=re.MULTILINE):
+                    config_lines.append("CONFIG_KSU_SUSFS=y")
                 for sym in susfs_candidate_syms:
                     if re.search(rf"^\s*config\s+{sym}\b", ktxt, flags=re.MULTILINE):
                         config_lines.append(f"CONFIG_{sym}=y")

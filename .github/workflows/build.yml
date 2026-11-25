@@ -377,8 +377,8 @@ jobs:
             if [ -z "$REL" ] || ! echo "$REL" | jq -e '.assets' >/dev/null 2>&1; then
               REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest")
             fi
-            APK_URL=$(echo "$REL" | jq -r '[.assets[] | select(.name | endswith(".apk"))] | (map(select(.name | test("release"))) + .)[0].browser_download_url // empty')
-            [ -n "$APK_URL" ] || { echo "::error::No FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
+            APK_URL=$(echo "$REL" | jq -r '[.assets[] | select((.name | endswith(".apk")) and ((.name | test("arm64|aarch64"; "i")) or ((.name | test("armeabi|v7a|x86|riscv"; "i")) | not))] | (map(select(.name | test("release"; "i"))) + .)[0].browser_download_url // empty')
+            [ -n "$APK_URL" ] || { echo "::error::No arm64 FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
             echo "Reading manager signature from $APK_URL"
             curl -fsSL -o "$RUNNER_TEMP/finasu-manager.apk" "$APK_URL"
             cat > "$RUNNER_TEMP/apk_cert.py" << 'PYEOF'
@@ -525,41 +525,24 @@ jobs:
           ttl: ${{ inputs.ttl }}
           unicodefix: ${{ inputs.unicodefix }}
 
-      - name: Set Normie-Kernel and Root Variant in Output Filename
+      - name: Set Normie-Kernel and Root Variant Early in Output Filename
         run: |
+          ROOT_TAG="${{ env.ROOT_PROVIDER }}"
           NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
 
-          if [[ "$NEW_FILE_NAME" != *"Normie-Kernel"* ]]; then
-            if [ -n "$ARTIFACT_BASE" ] && [[ "$NEW_FILE_NAME" == "$ARTIFACT_BASE"* ]]; then
-              NEW_FILE_NAME="${ARTIFACT_BASE}-Normie-Kernel${NEW_FILE_NAME#"$ARTIFACT_BASE"}"
-            else
-              NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel"
-            fi
-          fi
+          # Strip any trailing root variant tag so we can place it right after Normie-Kernel
+          for tag in sukisu-nova SukiSU-Nova finasu FinaSU bakasu BakaSU clean Clean; do
+            NEW_FILE_NAME="${NEW_FILE_NAME%"-$tag"}"
+          done
 
-          case "${{ env.ROOT_PROVIDER }}" in
-            sukisu-nova)
-              if [[ "$NEW_FILE_NAME" != *"-sukisu-nova"* && "$NEW_FILE_NAME" != *"-SukiSU-Nova"* ]]; then
-                NEW_FILE_NAME="${NEW_FILE_NAME}-sukisu-nova"
-              fi
-              ;;
-            finasu)
-              if [[ "$NEW_FILE_NAME" != *"-finasu"* && "$NEW_FILE_NAME" != *"-FinaSU"* ]]; then
-                NEW_FILE_NAME="${NEW_FILE_NAME}-finasu"
-              fi
-              ;;
-            bakasu)
-              if [[ "$NEW_FILE_NAME" != *"-bakasu"* && "$NEW_FILE_NAME" != *"-BakaSU"* ]]; then
-                NEW_FILE_NAME="${NEW_FILE_NAME}-bakasu"
-              fi
-              ;;
-            clean)
-              if [[ "$NEW_FILE_NAME" != *"-clean"* && "$NEW_FILE_NAME" != *"-Clean"* ]]; then
-                NEW_FILE_NAME="${NEW_FILE_NAME}-clean"
-              fi
-              ;;
-          esac
+          if [[ "$NEW_FILE_NAME" == *"Normie-Kernel"* ]]; then
+            NEW_FILE_NAME="${NEW_FILE_NAME/Normie-Kernel/Normie-Kernel-${ROOT_TAG}}"
+          elif [ -n "$ARTIFACT_BASE" ] && [[ "$NEW_FILE_NAME" == "$ARTIFACT_BASE"* ]]; then
+            NEW_FILE_NAME="${ARTIFACT_BASE}-Normie-Kernel-${ROOT_TAG}${NEW_FILE_NAME#"$ARTIFACT_BASE"}"
+          else
+            NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel-${ROOT_TAG}"
+          fi
 
           echo "FILE_NAME=$NEW_FILE_NAME" >> $GITHUB_ENV
           echo "Output FILE_NAME set to: $NEW_FILE_NAME"

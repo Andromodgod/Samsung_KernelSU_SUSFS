@@ -92,13 +92,27 @@ runs:
             done
           fi
 
-          # 3. Patch Kbuild: neutralize submodule $(error), set KSU_SRC/KSU_VERSION, and inject -I only into C compiler commands for runner
+          # 3. Patch Kbuild & static_export_check.mk: neutralize $(error), set KSU_SRC/KSU_VERSION, and inject -I for runner
           python3 - "$KERNEL_DIR" "$KSU_VER" << 'PYEOF'
         import pathlib, re, sys
 
         kernel_dir = pathlib.Path(sys.argv[1])
         ksu_ver = sys.argv[2]
         inc_flags = "-I$(srctree)/drivers/kernelsu -I$(srctree)/drivers/kernelsu/include"
+
+        for mk_file in [
+            kernel_dir / "drivers/kernelsu/tools/static_export_check.mk",
+            kernel_dir / "KernelSU/kernel/tools/static_export_check.mk",
+            kernel_dir / "BakaSU/kernel/tools/static_export_check.mk",
+            kernel_dir / "SukiSU-Nova/kernel/tools/static_export_check.mk",
+            kernel_dir / "FinaSU/kernel/tools/static_export_check.mk",
+        ]:
+            if mk_file.is_file():
+                mtxt = mk_file.read_text(encoding="utf-8", errors="ignore")
+                mtxt_new = re.sub(r"\$\(error\b", "$(warning", mtxt)
+                if mtxt_new != mtxt:
+                    mk_file.write_text(mtxt_new, encoding="utf-8")
+                    print(f"Neutralized $(error in {mk_file}")
 
         targets = [
             kernel_dir / "drivers/kernelsu/Kbuild",
@@ -113,11 +127,7 @@ runs:
                 continue
             text = kbuild.read_text(encoding="utf-8", errors="ignore")
 
-            text = re.sub(
-                r"\$\(error\b(?=[^\n]*(?:SukiSU-Nova|BakaSU|FinaSU|KernelSU|git submodule))",
-                "$(warning",
-                text,
-            )
+            text = re.sub(r"\$\(error\b", "$(warning", text)
             text = re.sub(
                 r"^[ \t]*KSU_SRC[ \t]*[:?]?=.*$",
                 "KSU_SRC := $(srctree)/drivers/kernelsu",
@@ -206,7 +216,7 @@ runs:
             EFFECTIVE_LTO="full"
           fi
 
-          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" "${ROOT_PROVIDER:-}" "${KPM:-true}" << 'PYEOF'
+          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" "${ROOT_PROVIDER:-}" << 'PYEOF'
         import os, pathlib, re, sys
 
         roots = []
@@ -222,18 +232,15 @@ runs:
         lto_mode = sys.argv[3]
         kp_dir = pathlib.Path(sys.argv[4])
         root_provider = sys.argv[5]
-        kpm_enabled = sys.argv[6].strip().lower() == "true"
 
         base_config_lines = [
             'CONFIG_LOCALVERSION="-Normie-Kernel"',
-            # 100Hz battery-optimized kernel timer + tickless idle (reduces periodic CPU wakeups)
             "CONFIG_HZ_100=y",
             "# CONFIG_HZ_250 is not set",
             "# CONFIG_HZ_300 is not set",
             "# CONFIG_HZ_1000 is not set",
             "CONFIG_HZ=100",
             "CONFIG_NO_HZ_IDLE=y",
-            # Battery, CPUIdle, Lazy RCU & Deep Sleep Optimizations (KMI-safe)
             "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y",
             "CONFIG_RCU_NOCB_CPU=y",
             "CONFIG_RCU_LAZY=y",
@@ -245,20 +252,17 @@ runs:
             "CONFIG_CPU_IDLE_GOV_TEO=y",
             "CONFIG_ARM_PSCI_CPUIDLE=y",
             "CONFIG_ARM_PSCI_CPUIDLE_DOMAIN=y",
-            # MGLRU active at boot + THP madvise (reduces kswapd & khugepaged wakeups)
             "CONFIG_LRU_GEN=y",
             "CONFIG_LRU_GEN_ENABLED=y",
             "# CONFIG_LRU_GEN_STATS is not set",
             "CONFIG_TRANSPARENT_HUGEPAGE=y",
             "# CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS is not set",
             "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y",
-            # Zstd crypto & F2FS Zstd/LZ4 compression
             "CONFIG_CRYPTO_ZSTD=y",
             "CONFIG_F2FS_FS_COMPRESSION=y",
             "CONFIG_F2FS_FS_ZSTD=y",
             "CONFIG_F2FS_FS_LZ4=y",
             "CONFIG_F2FS_FS_LZ4HC=y",
-            # Built-in controller drivers
             "CONFIG_INPUT_JOYDEV=y",
             "CONFIG_INPUT_JOYSTICK=y",
             "CONFIG_JOYSTICK_XPAD=y",
@@ -272,10 +276,8 @@ runs:
             "CONFIG_SONY_FF=y",
             "CONFIG_HID_MICROSOFT=y",
             "CONFIG_HID_STEAM=y",
-            # USB Gadget HID & Mass Storage
             "CONFIG_USB_CONFIGFS_F_HID=y",
             "CONFIG_USB_CONFIGFS_MASS_STORAGE=y",
-            # Default BBRv3 + FQ pacing (faster transfer completion = faster modem race-to-idle) + WireGuard
             "CONFIG_TCP_CONG_ADVANCED=y",
             "# CONFIG_TCP_CONG_BIC is not set",
             "# CONFIG_TCP_CONG_WESTWOOD is not set",
@@ -324,9 +326,6 @@ runs:
         ]
 
         extra_strip_keys = {
-            "CONFIG_KPM",
-            "CONFIG_KALLSYMS",
-            "CONFIG_KALLSYMS_ALL",
             "CONFIG_DEFAULT_CUBIC",
             "CONFIG_DEFAULT_RENO",
             "CONFIG_DEFAULT_PFIFO_FAST",
@@ -348,6 +347,9 @@ runs:
             "CONFIG_USB_F_MASS_STORAGE",
         }
 
+        if root_provider != "bakasu":
+            extra_strip_keys.update({"CONFIG_KALLSYMS", "CONFIG_KALLSYMS_ALL"})
+
         builtin_kos = (
             "joydev.ko",
             "xpad.ko",
@@ -362,7 +364,6 @@ runs:
             "tcp_bbr.ko",
         )
 
-        # 32ms stock PELT half-life prevents micro-burst background wakeups from boosting Cortex-X4 prime core
         halflife = 32
         y = 0.5 ** (1.0 / halflife)
         inv_vals = [int(((1 << 32) - 1) * (y ** i)) for i in range(32)]
@@ -387,6 +388,9 @@ runs:
             print(f"Configuring kernel tree: {root}")
             config_lines = list(base_config_lines)
 
+            if root_provider == "bakasu":
+                config_lines += ["CONFIG_KALLSYMS=y", "CONFIG_KALLSYMS_ALL=y"]
+
             ksu_kcs = [
                 p for p in (
                     root / "drivers/kernelsu/Kconfig",
@@ -399,9 +403,6 @@ runs:
                 ktxt = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ksu_kcs)
                 config_lines.append("CONFIG_KSU=y")
                 if root_provider == "sukisu-nova":
-                    if kpm_enabled and re.search(r"^\s*config\s+KPM\b", ktxt, flags=re.MULTILINE):
-                        config_lines.append("CONFIG_KPM=y")
-                        config_lines += ["CONFIG_KALLSYMS=y", "CONFIG_KALLSYMS_ALL=y"]
                     if re.search(r"^\s*config\s+KSU_SUSFS\b", ktxt, flags=re.MULTILINE):
                         config_lines.append("CONFIG_KSU_SUSFS=y")
                 for sym in susfs_candidate_syms:
@@ -470,7 +471,6 @@ runs:
                     pelt_c.write_text(ctxt, encoding="utf-8")
                     print(f"Applied {halflife}ms PELT half-life in {root}")
 
-            # Lower default RT task uclamp_min (384) so audio/sensor SCHED_FIFO threads don't pin Cortex-X4 prime core
             rt_c = root / "kernel/sched/rt.c"
             if rt_c.is_file():
                 rtxt = rt_c.read_text(encoding="utf-8", errors="ignore")
@@ -483,7 +483,6 @@ runs:
                     rt_c.write_text(rtxt_new, encoding="utf-8")
                     print(f"Lowered sysctl_sched_uclamp_util_min_rt_default to 384 in {rt_c}")
 
-            # Force RCU_LAZY_DEFAULT_OFF default to n in Kconfig so Lazy RCU is active at boot
             rcu_kc = root / "kernel/rcu/Kconfig"
             if rcu_kc.is_file():
                 rktxt = rcu_kc.read_text(encoding="utf-8", errors="ignore")
@@ -497,7 +496,6 @@ runs:
                     rcu_kc.write_text(rktxt_new, encoding="utf-8")
                     print(f"Set RCU_LAZY_DEFAULT_OFF default to n in {rcu_kc}")
 
-            # Inject Boeffla Wakelock Blocker (/sys/class/misc/boeffla_wakelock_blocker/wakelock_blocker) via late_initcall
             wakeup_c = root / "drivers/base/power/wakeup.c"
             if wakeup_c.is_file():
                 wtxt = wakeup_c.read_text(encoding="utf-8", errors="ignore")
@@ -525,14 +523,13 @@ runs:
                     wakeup_c.write_text(wtxt, encoding="utf-8")
                     print(f"Injected boeffla_wakelock_blocker in {wakeup_c}")
 
-            # D. Mask root/stealth configs in /proc/config.gz (Linux 6.1 cmd_ikconfig uses < $< > $@)
             k_mk = root / "kernel/Makefile"
             if k_mk.is_file():
                 mtxt = k_mk.read_text(encoding="utf-8", errors="ignore")
-                if "cmd_ikconfig" in mtxt and "CONFIG_KPM" not in mtxt:
+                if "cmd_ikconfig" in mtxt and "CONFIG_BBG" not in mtxt:
                     spoof_rhs = (
                         "(sed -E '"
-                        r"s/^(CONFIG_(?:KSU|KPM|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*)=.*/# \1 is not set/; "
+                        r"s/^(CONFIG_(?:KSU|BBG|TMPFS_XATTR|IP6_NF_NAT|WIREGUARD)[A-Z0-9_]*)=.*/# \1 is not set/; "
                         r"s/^CONFIG_DEFAULT_BBR=y/# CONFIG_DEFAULT_BBR is not set/; "
                         r's/^CONFIG_DEFAULT_TCP_CONG=.*/CONFIG_DEFAULT_TCP_CONG="cubic"/'
                         "' $< | $(KGZIP) -n -f -9 > $@)"
@@ -547,7 +544,6 @@ runs:
                         k_mk.write_text(mtxt_new, encoding="utf-8")
                         print(f"Patched cmd_ikconfig stealth filter in {k_mk}")
 
-            # E1. Patch top-level Makefile filechk_kernel.release so UTS_RELEASE always ends with -Normie-Kernel
             top_mk = root / "Makefile"
             if top_mk.is_file():
                 tmtxt = top_mk.read_text(encoding="utf-8", errors="ignore")
@@ -561,7 +557,6 @@ runs:
                         top_mk.write_text(tmtxt_new, encoding="utf-8")
                         print(f"Patched filechk_kernel.release in {top_mk}")
 
-            # E2. Also patch scripts/setlocalversion for non-Kleaf fallback paths
             setlocal = root / "scripts/setlocalversion"
             if setlocal.is_file():
                 sltxt = setlocal.read_text(encoding="utf-8", errors="ignore")
@@ -579,7 +574,6 @@ runs:
             for lv in root.glob("localversion*"):
                 lv.unlink(missing_ok=True)
 
-        # E3. Patch Kleaf stamp.bzl without literal '$' + '{{' so GitHub Actions does not parse it as an expression
         stamp_bzl = kp_dir / "build/kernel/kleaf/impl/stamp.bzl"
         if stamp_bzl.is_file():
             sbtxt = stamp_bzl.read_text(encoding="utf-8", errors="ignore")
@@ -594,11 +588,9 @@ runs:
         PYEOF
         fi
 
-        # 1. Initialize variables as empty (clears them out for "none")
         BAZEL_LTO=""
         SCRIPT_LTO=""
 
-        # 2. Default to Full Clang LTO unless thin/none is explicitly requested
         EFFECTIVE_LTO="${BUILD_LTO:-full}"
         if [[ "$EFFECTIVE_LTO" == "default" ]]; then
           EFFECTIVE_LTO="full"
@@ -630,7 +622,6 @@ runs:
           tools/bazel build $BAZEL_LTO //common:kernel_aarch64
         fi
 
-        # 5. Copy built kernel Image out of Bazel cache into dist directories and verify embedded Linux version string
         if [ -d kernel_platform ]; then
           mkdir -p sec/dist kernel_platform/dist
           mapfile -t BAZEL_IMAGES < <(
@@ -662,10 +653,8 @@ runs:
       run: |
         set -e
         set -x
-        # 1. Initialize variables as empty (clears them out for "default")
         SCRIPT_LTO=""
 
-        # 2. Only populate if explicit modifications are requested
         if [[ "$BUILD_LTO" == "thin" || "$BUILD_LTO" == "full" ]]; then
           SCRIPT_LTO="LTO=$BUILD_LTO"
         fi

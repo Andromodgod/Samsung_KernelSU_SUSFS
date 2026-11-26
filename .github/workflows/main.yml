@@ -65,68 +65,68 @@ on:
       susfs:
         description: "SUSFS"
         required: false
-        default: true
         type: boolean
+        default: true
 
       nomount:
         description: "NoMount"
         required: false
-        default: true
         type: boolean
+        default: true
 
       bbg:
         description: "BBG"
         required: false
-        default: true
         type: boolean
+        default: true
 
       unicodefix:
         description: "Unicode fix"
         required: false
-        default: true
         type: boolean
+        default: true
 
       droidspace:
         description: "Droidspaces"
         required: false
-        default: true
         type: boolean
+        default: true
 
       ntsync:
         description: "NTsync"
         required: false
-        default: true
         type: boolean
+        default: true
 
       bbrv3:
         description: "bbrv3"
         required: false
-        default: true
         type: boolean
+        default: true
 
       cache:
         description: "CCache"
         required: false
-        default: true
         type: boolean
+        default: true
 
       ipv6_nat:
         description: "IPv6_NAT & IP-SET"
         required: false
-        default: true
         type: boolean
+        default: true
 
       optimization:
         description: "optimization patches"
         required: false
-        default: true
         type: boolean
+        default: true
 
       ttl:
         description: "TTL support"
         required: false
-        default: true
         type: boolean
+        default: true
 
 jobs:
   build-samsung:
@@ -150,9 +150,10 @@ jobs:
 
   fetch-managers:
     runs-on: ubuntu-latest
-    if: inputs.root_provider != 'clean' && inputs.include_managers == true
+    if: (inputs.root_provider != 'clean' && inputs.include_managers == true) || inputs.nomount == true
     steps:
       - name: Download KSU Manager APKs (arm64 only)
+        if: inputs.root_provider != 'clean' && inputs.include_managers == true
         env:
           ROOT_PROVIDER: ${{ inputs.root_provider }}
           GH_TOKEN: ${{ github.token }}
@@ -219,21 +220,49 @@ jobs:
 
           ls -lh "$GITHUB_WORKSPACE/manager-apks" || true
 
-      - name: Check Downloaded Manager APKs
+      - name: Download NoMount Suite Built-In Metamodule ZIP
+        if: inputs.nomount == true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p manager-apks
+          json=$(curl -fsSL -H "Accept: application/vnd.github+json" ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} "https://api.github.com/repos/Bouteillepleine/NoMount-Suite/releases/latest" || true)
+          if [ -z "$json" ] || ! echo "$json" | jq -e '.assets' >/dev/null 2>&1; then
+            json=$(curl -fsSL -H "Accept: application/vnd.github+json" ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} "https://api.github.com/repos/Bouteillepleine/NoMount-Suite/releases" | jq '.[0] // empty')
+          fi
+          [ -n "$json" ] || { echo "::warning::No release metadata found for Bouteillepleine/NoMount-Suite"; exit 0; }
+
+          asset_line=$(echo "$json" | jq -r '.assets[]? | select(.name | startswith("00_NoMount-Module") and endswith(".zip")) | [.name, .browser_download_url] | @tsv' | head -n 1)
+          asset_name=$(printf '%s' "$asset_line" | cut -f1)
+          dl_url=$(printf '%s' "$asset_line" | cut -f2)
+
+          if [ -n "$dl_url" ] && [ -n "$asset_name" ]; then
+            echo "Downloading NoMount Suite metamodule: $asset_name"
+            curl -fL "$dl_url" -o "manager-apks/$asset_name"
+          else
+            echo "::warning::No 00_NoMount-Module*.zip asset found in Bouteillepleine/NoMount-Suite release"
+          fi
+
+          ls -lh "$GITHUB_WORKSPACE/manager-apks" || true
+
+      - name: Check Downloaded Manager & Module Assets
         id: check_apks
         run: |
-          if compgen -G "manager-apks/*.apk" >/dev/null; then
+          if compgen -G "manager-apks/*.apk" >/dev/null || compgen -G "manager-apks/00_NoMount-Module*.zip" >/dev/null; then
             echo "has_apks=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_apks=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload Kernel Manager APKs Artifact
+      - name: Upload Kernel Manager & Metamodule Artifact
         if: steps.check_apks.outputs.has_apks == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: Kernel-Managers
-          path: manager-apks/*.apk
+          path: |
+            manager-apks/*.apk
+            manager-apks/00_NoMount-Module*.zip
           compression-level: 9
 
   build-normie-battery:
@@ -1106,19 +1135,19 @@ jobs:
           name: Normie-WALT-Battery-v1.10
           path: ./release-assets
 
-      - name: Download Kernel Manager APKs Artifact
-        if: inputs.root_provider != 'clean' && inputs.include_managers == true
+      - name: Download Kernel Manager & Metamodule Artifact
+        if: (inputs.root_provider != 'clean' && inputs.include_managers == true) || inputs.nomount == true
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: Kernel-Managers
           path: ./manager-release-assets
 
-      - name: Stage Kernel Manager APKs
-        if: inputs.root_provider != 'clean' && inputs.include_managers == true
+      - name: Stage Kernel Manager & Metamodule Assets
+        if: (inputs.root_provider != 'clean' && inputs.include_managers == true) || inputs.nomount == true
         run: |
-          cp -f ./manager-release-assets/*.apk "$GITHUB_WORKSPACE/" 2>/dev/null || true
-          ls -lh "$GITHUB_WORKSPACE"/*.apk 2>/dev/null || true
+          cp -f ./manager-release-assets/*.apk ./manager-release-assets/00_NoMount-Module*.zip "$GITHUB_WORKSPACE/" 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE"/*.apk "$GITHUB_WORKSPACE"/00_NoMount-Module*.zip 2>/dev/null || true
 
       - name: Package Timestamped AnyKernel3 Release ZIPs
         run: |
@@ -1158,7 +1187,7 @@ jobs:
             cp -f "./release-assets/Normie-WALT-Battery-v1.10.zip" "$GITHUB_WORKSPACE/Normie-WALT-Battery-v1.10.zip"
           fi
 
-          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.10.zip "$GITHUB_WORKSPACE"/*.apk 2>/dev/null || true
+          ls -lh "$GITHUB_WORKSPACE"/*-AnyKernel3-*.zip "$GITHUB_WORKSPACE"/Normie-WALT-Battery-v1.10.zip "$GITHUB_WORKSPACE"/00_NoMount-Module*.zip "$GITHUB_WORKSPACE"/*.apk 2>/dev/null || true
 
       - name: get commit hashes
         run: |
@@ -1180,7 +1209,7 @@ jobs:
            echo "BBG_HASH=$(git ls-remote https://github.com/vc-teahouse/Baseband-guard.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
          fi
          if [[ "${{ inputs.nomount }}" == "true" ]]; then
-           echo "NM_HASH=$(git ls-remote https://github.com/maxsteeel/nomount.git refs/heads/master | cut -f1)" >> $GITHUB_ENV
+           echo "NM_HASH=$(git ls-remote https://github.com/Bouteillepleine/NoMount-Suite.git refs/heads/main | cut -f1)" >> $GITHUB_ENV
          fi
 
       - name: Set dynamic release title and body
@@ -1259,7 +1288,7 @@ jobs:
 
           if [[ "${{ inputs.nomount }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          -> NoMount - https://github.com/maxsteeel/nomount
+          -> NoMount Suite (Prism VFS engine) - https://github.com/Bouteillepleine/NoMount-Suite
           EOF
           fi
 
@@ -1310,9 +1339,9 @@ jobs:
           fi
           fi
 
-          if compgen -G "$GITHUB_WORKSPACE/*.apk" >/dev/null; then
+          if compgen -G "$GITHUB_WORKSPACE/*.apk" >/dev/null || compgen -G "$GITHUB_WORKSPACE/00_NoMount-Module*.zip" >/dev/null; then
           cat <<'EOF' >> release_body.md
-          -> Kernel Manager APKs Attached - Matching arm64 manager APK(s) for the selected root variant(s) are included in the release assets
+          -> Manager APKs & Metamodule Attached - Matching arm64 manager APK(s) and/or NoMount Suite metamodule ZIP (00_NoMount-Module-*.zip) are included in the release assets
           EOF
           fi
 
@@ -1361,7 +1390,7 @@ jobs:
           fi
           if [[ "${{ inputs.nomount }}" == "true" ]]; then
           cat <<'EOF' >> release_body.md
-          NoMount: ${{ env.NM_HASH }}
+          NoMount Suite: ${{ env.NM_HASH }}
           EOF
           fi
           fi
@@ -1374,6 +1403,7 @@ jobs:
           files: |
             *-AnyKernel3-*.zip
             ${{ inputs.build_normie_battery && 'Normie-WALT-Battery-v1.10.zip' || '' }}
+            00_NoMount-Module*.zip
             *.apk
           fail_on_unmatched_files: false
           name: ${{ env.RELEASE_NAME }}

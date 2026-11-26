@@ -10,6 +10,10 @@ on:
       root_provider:
         required: true
         type: string
+      kpm:
+        required: false
+        type: string
+        default: none
       susfs:
         required: true
         type: string
@@ -61,6 +65,9 @@ jobs:
 
           target_in = "${{ inputs.oneui_targets }}".strip()
           root_in = "${{ inputs.root_provider }}".strip()
+          kpm_in = "${{ inputs.kpm }}".strip() or "none"
+          if kpm_in not in ("none", "patch_linux", "kpn"):
+              kpm_in = "none"
 
           if not target_in or target_in == "all":
               branches = ["SM-S928B-Oneui9", "SM-S928B-Oneui8.5", "SM-S928B-Oneui8"]
@@ -79,6 +86,7 @@ jobs:
                   "branch": branch,
                   "build_type": "Bazel",
                   "root_provider": root,
+                  "kpm": kpm_in if root == "sukisu-nova" else "none",
                   "sukisu_nova": "true" if root == "sukisu-nova" else "false",
                   "bakasu": "true" if root == "bakasu" else "false",
                   "finasu": "true" if root == "finasu" else "false",
@@ -105,6 +113,7 @@ jobs:
       branch: ${{ matrix.branch }}
       build_type: ${{ matrix.build_type }}
       root_provider: ${{ matrix.root_provider }}
+      kpm: ${{ matrix.kpm }}
       sukisu_nova: ${{ matrix.sukisu_nova }}
       bakasu: ${{ matrix.bakasu }}
       finasu: ${{ matrix.finasu }}

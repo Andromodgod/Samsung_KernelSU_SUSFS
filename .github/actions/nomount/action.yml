@@ -1,16 +1,39 @@
 name: add nomount
-description: add and configure nomount
+description: add and configure nomount-suite
 
 runs:
   using: composite
   steps:
-   - name: run setup script
-     shell: bash
-     run: |
-      cd "$COMMON"
-      curl https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+    - name: apply nomount-suite kernel integration
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_DIR="${COMMON:-$PWD}"
+        DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_DIR/arch/arm64/configs/gki_defconfig}"
+        WORK_DIR="${RUNNER_TEMP:-/tmp}/nomount-suite"
 
-   - name: add to defconfig
-     shell: bash
-     run: |
-      "$COMMON/scripts/config" --file "$GKI_DEFCONFIG" --enable CONFIG_NOMOUNT
+        rm -rf "$WORK_DIR"
+        git clone --depth=1 --single-branch https://github.com/Bouteillepleine/NoMount-Suite.git "$WORK_DIR"
+
+        PATCH_FILE="$WORK_DIR/hookless/patches/nomount_kernel_integration.patch"
+        SRC_DIR="$WORK_DIR/hookless/src"
+
+        [ -f "$PATCH_FILE" ] || { echo "::error::Missing $PATCH_FILE"; exit 1; }
+        [ -f "$SRC_DIR/nomount.c" ] && [ -f "$SRC_DIR/nomount.h" ] || {
+          echo "::error::Missing nomount.c or nomount.h in $SRC_DIR"
+          exit 1
+        }
+
+        cd "$KERNEL_DIR"
+        patch --fuzz=0 -p1 < "$PATCH_FILE"
+        cp -f "$SRC_DIR/nomount.c" "$SRC_DIR/nomount.h" fs/
+
+        if [ -f "$DEFCONFIG" ]; then
+          if [ -x "$KERNEL_DIR/scripts/config" ]; then
+            "$KERNEL_DIR/scripts/config" --file "$DEFCONFIG" --enable CONFIG_NOMOUNT
+          else
+            grep -q "^CONFIG_NOMOUNT=y" "$DEFCONFIG" || echo "CONFIG_NOMOUNT=y" >> "$DEFCONFIG"
+          fi
+        fi
+
+        rm -rf "$WORK_DIR"

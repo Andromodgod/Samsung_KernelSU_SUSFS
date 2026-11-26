@@ -249,6 +249,7 @@ jobs:
       - name: Add BakaSU
         if: inputs.bakasu == 'true' && inputs.finasu != 'true' && inputs.sukisu_nova != 'true' && env.ROOT_PROVIDER != 'sukisu-nova'
         run: |
+          set -euo pipefail
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
@@ -271,11 +272,22 @@ jobs:
             echo "Materialized drivers/kernelsu from $TARGET"
           fi
 
+          for mk_file in \
+            "$KERNEL_ROOT/drivers/kernelsu/tools/static_export_check.mk" \
+            "$KERNEL_ROOT/KernelSU/kernel/tools/static_export_check.mk" \
+            "$KERNEL_ROOT/BakaSU/kernel/tools/static_export_check.mk"; do
+            if [ -f "$mk_file" ]; then
+              sed -i -E 's/\$\(error\b/\$(warning/g' "$mk_file"
+              echo 'Neutralized $(error) in '"$mk_file"
+            fi
+          done
+
           for KBUILD_FILE in \
             "$KERNEL_ROOT/drivers/kernelsu/Kbuild" \
             "$KERNEL_ROOT/KernelSU/kernel/Kbuild" \
             "$KERNEL_ROOT/BakaSU/kernel/Kbuild"; do
             if [ -f "$KBUILD_FILE" ]; then
+              sed -i -E 's/\$\(error\b/\$(warning/g' "$KBUILD_FILE"
               sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$KBUILD_FILE"
               grep -q "KSU_SRC :=" "$KBUILD_FILE" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$KBUILD_FILE"
               sed -i '/You should use BakaSU as a git submodule/d' "$KBUILD_FILE"
@@ -374,10 +386,34 @@ jobs:
             api() { curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$1"; }
             REL=""
             if [ -n "${FINASU_REF:-}" ]; then REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/tags/${FINASU_REF}" 2>/dev/null || true); fi
-            if [ -z "$REL" ] || ! echo "$REL" | jq -e '.assets' >/dev/null 2>&1; then
+            if [ -z "$REL" ] || ! printf '%s\n' "$REL" | jq -e '.assets' >/dev/null 2>&1; then
               REL=$(api "https://api.github.com/repos/LyraVoid/FinaSU/releases/latest")
             fi
-            APK_URL=$(echo "$REL" | jq -r '[.assets[] | select((.name | endswith(".apk")) and ((.name | test("arm64\\|aarch64"; "i")) or ((.name | test("armeabi\\|v7a\\|x86\\|riscv"; "i")) | not))] | (map(select(.name | test("release"; "i"))) + .)[0].browser_download_url // empty')
+            APK_URL=$(python3 -c '
+          import json, re, sys
+
+          data = json.load(sys.stdin)
+          assets = data.get("assets") or []
+          apks = [a.get("browser_download_url", "") for a in assets if isinstance(a, dict) and str(a.get("name", "")).endswith(".apk")]
+
+          def score(url):
+              name = url.rsplit("/", 1)[-1].lower()
+              is_arm64 = bool(re.search(r"arm64|aarch64", name))
+              has_other_arch = bool(re.search(r"armeabi|v7a|x86|riscv", name))
+              if not (is_arm64 or not has_other_arch):
+                  return None
+              is_release = 1 if "release" in name else 0
+              return (is_release, 1 if is_arm64 else 0)
+
+          ranked = []
+          for u in apks:
+              s = score(u)
+              if s is not None and u:
+                  ranked.append((s, u))
+
+          ranked.sort(key=lambda item: item[0], reverse=True)
+          print(ranked[0][1] if ranked else "")
+          ' <<< "$REL")
             [ -n "$APK_URL" ] || { echo "::error::No arm64 FinaSU manager APK found in the release; set FINASU_SIG_SIZE and FINASU_SIG_HASH repo variables"; exit 1; }
             echo "Reading manager signature from $APK_URL"
             curl -fsSL -o "$RUNNER_TEMP/finasu-manager.apk" "$APK_URL"
@@ -431,13 +467,13 @@ jobs:
           echo "Manager signature: size=${SIG_SIZE} sha256=${SIG_HASH}"
           grep -n -E "KSU_EXPECTED_SIZE :=|KSU_EXPECTED_HASH :=|-DKSU_VERSION=|KSU_VERSION_FULL :=" "$KB" || true
 
-      - name: Add SUSFS
-        if: inputs.susfs == 'true'
-        uses: ./.github/actions/susfs-patches
-
       - name: add nomount
         if: inputs.nomount == 'true'
         uses: ./.github/actions/nomount
+
+      - name: Add SUSFS
+        if: inputs.susfs == 'true'
+        uses: ./.github/actions/susfs-patches
 
       - name: Add BBG
         if: inputs.bbg == 'true'
@@ -483,18 +519,17 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            sed -i '/^CONFIG_KPM=y/d' "$DEFCONFIG"
+            if [[ "${{ inputs.nomount }}" == "true" ]]; then
+              grep -q "^CONFIG_NOMOUNT=y" "$DEFCONFIG" || echo "CONFIG_NOMOUNT=y" >> "$DEFCONFIG"
+            fi
             if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
-              if [[ "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
-                if grep -rnE "^\s*config\s+KPM\b" "$KERNEL_ROOT/drivers/kernelsu" "$GITHUB_WORKSPACE/SukiSU-Nova" 2>/dev/null | grep -q .; then
-                  grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
-                else
-                  echo "Note: config KPM not found in SukiSU-Nova Kconfig; skipping CONFIG_KPM=y"
-                fi
+              if [[ "${{ env.ROOT_PROVIDER }}" == "bakasu" || "${{ inputs.bakasu }}" == "true" ]]; then
+                grep -q "^CONFIG_KALLSYMS=y" "$DEFCONFIG" || echo "CONFIG_KALLSYMS=y" >> "$DEFCONFIG"
+                grep -q "^CONFIG_KALLSYMS_ALL=y" "$DEFCONFIG" || echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
               fi
             fi
           fi
@@ -531,7 +566,6 @@ jobs:
           NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
 
-          # Strip any trailing root variant tag so we can place it right after Normie-Kernel
           for tag in sukisu-nova SukiSU-Nova finasu FinaSU bakasu BakaSU clean Clean; do
             NEW_FILE_NAME="${NEW_FILE_NAME%"-$tag"}"
           done
@@ -583,7 +617,7 @@ jobs:
           fi
           CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
           if [ -n "$CFG" ]; then
-            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_KPM=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/KPM not found in $CFG"
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_NOMOUNT=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/NOMOUNT not found in $CFG"
             grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
           fi
 

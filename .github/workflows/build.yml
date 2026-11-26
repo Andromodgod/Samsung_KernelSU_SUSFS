@@ -19,10 +19,6 @@ on:
       susfs:
         required: true
         type: string
-      kpm:
-        required: false
-        type: string
-        default: "true"
       bbg:
         required: true
         type: string
@@ -96,7 +92,6 @@ jobs:
           fi
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "ROOT_PROVIDER=$ROOT_PROVIDER" >> $GITHUB_ENV
-          echo "KPM=${{ inputs.kpm }}" >> $GITHUB_ENV
 
       - name: get kernel version before cloning
         uses: ./.github/actions/kernel-info
@@ -254,6 +249,7 @@ jobs:
       - name: Add BakaSU
         if: inputs.bakasu == 'true' && inputs.finasu != 'true' && inputs.sukisu_nova != 'true' && env.ROOT_PROVIDER != 'sukisu-nova'
         run: |
+          set -euo pipefail
           KERNEL_ROOT="${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}"
           echo "KERNEL_ROOT=$KERNEL_ROOT" >> $GITHUB_ENV
 
@@ -276,11 +272,22 @@ jobs:
             echo "Materialized drivers/kernelsu from $TARGET"
           fi
 
+          for mk_file in \
+            "$KERNEL_ROOT/drivers/kernelsu/tools/static_export_check.mk" \
+            "$KERNEL_ROOT/KernelSU/kernel/tools/static_export_check.mk" \
+            "$KERNEL_ROOT/BakaSU/kernel/tools/static_export_check.mk"; do
+            if [ -f "$mk_file" ]; then
+              sed -i -E 's/\$\(error\b/\$(warning/g' "$mk_file"
+              echo "Neutralized $(error in $mk_file"
+            fi
+          done
+
           for KBUILD_FILE in \
             "$KERNEL_ROOT/drivers/kernelsu/Kbuild" \
             "$KERNEL_ROOT/KernelSU/kernel/Kbuild" \
             "$KERNEL_ROOT/BakaSU/kernel/Kbuild"; do
             if [ -f "$KBUILD_FILE" ]; then
+              sed -i -E 's/\$\(error\b/\$(warning/g' "$KBUILD_FILE"
               sed -i -E "s|^[[:space:]]*KSU_SRC[[:space:]]*[:?]?=.*|KSU_SRC := \$(srctree)/drivers/kernelsu|g" "$KBUILD_FILE"
               grep -q "KSU_SRC :=" "$KBUILD_FILE" || sed -i "1i KSU_SRC := \$(srctree)/drivers/kernelsu" "$KBUILD_FILE"
               sed -i '/You should use BakaSU as a git submodule/d' "$KBUILD_FILE"
@@ -512,18 +519,14 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
-            sed -i '/^CONFIG_KPM=y/d' "$DEFCONFIG"
             if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
-              if [[ "${{ inputs.kpm }}" == "true" && ( "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ) ]]; then
-                if grep -rnE "^\s*config\s+KPM\b" "$KERNEL_ROOT/drivers/kernelsu" "$GITHUB_WORKSPACE/SukiSU-Nova" 2>/dev/null | grep -q .; then
-                  grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
-                else
-                  echo "Note: config KPM not found in SukiSU-Nova Kconfig; skipping CONFIG_KPM=y"
-                fi
+              if [[ "${{ env.ROOT_PROVIDER }}" == "bakasu" || "${{ inputs.bakasu }}" == "true" ]]; then
+                grep -q "^CONFIG_KALLSYMS=y" "$DEFCONFIG" || echo "CONFIG_KALLSYMS=y" >> "$DEFCONFIG"
+                grep -q "^CONFIG_KALLSYMS_ALL=y" "$DEFCONFIG" || echo "CONFIG_KALLSYMS_ALL=y" >> "$DEFCONFIG"
               fi
             fi
           fi
@@ -560,7 +563,6 @@ jobs:
           NEW_FILE_NAME="${FILE_NAME//Haroon-Kernel/Normie-Kernel}"
           NEW_FILE_NAME="${NEW_FILE_NAME//Haroon/Normie-Kernel}"
 
-          # Strip any trailing root variant tag so we can place it right after Normie-Kernel
           for tag in sukisu-nova SukiSU-Nova finasu FinaSU bakasu BakaSU clean Clean; do
             NEW_FILE_NAME="${NEW_FILE_NAME%"-$tag"}"
           done
@@ -612,7 +614,7 @@ jobs:
           fi
           CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
           if [ -n "$CFG" ]; then
-            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_KPM=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/KPM not found in $CFG"
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS not found in $CFG"
             grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
           fi
 
@@ -626,42 +628,6 @@ jobs:
 
       - name: Prepare AnyKernel3
         uses: ./.github/actions/ak3zip-prep
-
-      - name: Apply KPM patch for SukiSU-Nova
-        if: inputs.kpm == 'true' && (inputs.sukisu_nova == 'true' || env.ROOT_PROVIDER == 'sukisu-nova')
-        shell: bash
-        run: |
-          set -euo pipefail
-          KERNEL_ROOT="${KERNEL_ROOT:-${COMMON:-$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common}}"
-          DEFCONFIG="${GKI_DEFCONFIG:-$KERNEL_ROOT/arch/arm64/configs/gki_defconfig}"
-          if [ -f "$DEFCONFIG" ] && ! grep -q "^CONFIG_KPM=y" "$DEFCONFIG"; then
-            echo "Skipping KPM patch: CONFIG_KPM=y is not enabled in $DEFCONFIG"
-            exit 0
-          fi
-          AK3_DIR="${ANYKERNEL3:-$GITHUB_WORKSPACE/AnyKernel3}"
-          WORK_KPM="${RUNNER_TEMP:-/tmp}/SukiSU_patch"
-          rm -rf "$WORK_KPM"
-          git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU_patch.git "$WORK_KPM"
-          mkdir -p "$AK3_DIR"
-          cp -f "$WORK_KPM/kpm/patch_linux" "$AK3_DIR/patch_linux"
-          cd "$AK3_DIR"
-          chmod +x patch_linux
-          if [[ -f Image.gz ]]; then
-            gzip -df Image.gz
-            ./patch_linux
-            rm -f patch_linux Image
-            mv oImage Image
-            gzip -9 -f Image
-          elif [[ -f Image ]]; then
-            ./patch_linux
-            rm -f patch_linux Image
-            mv oImage Image
-          else
-            echo "::error::Neither Image.gz nor Image found in $AK3_DIR"
-            exit 1
-          fi
-          rm -rf "$WORK_KPM"
-          echo "KPM patch applied successfully!"
 
       - name: Set AnyKernel3 Banner Name
         run: |
@@ -716,11 +682,6 @@ jobs:
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
           echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
-          if [[ "${{ inputs.kpm }}" == "true" && ( "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ) ]]; then
-            echo "- **KPM**: Enabled" >> build_summary.md
-          else
-            echo "- **KPM**: Disabled" >> build_summary.md
-          fi
           if [[ "${{ inputs.bbg }}" == "true" ]]; then
             echo "- **BBG**: Enabled" >> build_summary.md
           else

@@ -68,6 +68,12 @@ on:
         default: true
         type: boolean
 
+      kpm:
+        description: "KPM (Kernel Patch Module for SukiSU-Nova)"
+        required: false
+        default: true
+        type: boolean
+
       nomount:
         description: "NoMount"
         required: false
@@ -136,6 +142,7 @@ jobs:
       oneui_targets: ${{ inputs.oneui_targets }}
       root_provider: ${{ inputs.root_provider }}
       susfs: ${{ inputs.susfs }}
+      kpm: ${{ inputs.kpm }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
@@ -1219,6 +1226,11 @@ jobs:
           cat <<'EOF' >> release_body.md
           -> SukiSU-Nova - https://github.com/SukiSU-Nova/SukiSU-Nova
           EOF
+          if [[ "${{ inputs.kpm }}" == "true" ]]; then
+          cat <<'EOF' >> release_body.md
+          -> KPM Support (SukiSU-Nova) - Kernel image patched with SukiSU patch_linux for Kernel Patch Modules
+          EOF
+          fi
           fi
 
           if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then

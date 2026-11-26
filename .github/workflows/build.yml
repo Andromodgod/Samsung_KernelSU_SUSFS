@@ -467,13 +467,13 @@ jobs:
           echo "Manager signature: size=${SIG_SIZE} sha256=${SIG_HASH}"
           grep -n -E "KSU_EXPECTED_SIZE :=|KSU_EXPECTED_HASH :=|-DKSU_VERSION=|KSU_VERSION_FULL :=" "$KB" || true
 
-      - name: Add SUSFS
-        if: inputs.susfs == 'true'
-        uses: ./.github/actions/susfs-patches
-
       - name: add nomount
         if: inputs.nomount == 'true'
         uses: ./.github/actions/nomount
+
+      - name: Add SUSFS
+        if: inputs.susfs == 'true'
+        uses: ./.github/actions/susfs-patches
 
       - name: Add BBG
         if: inputs.bbg == 'true'
@@ -519,6 +519,9 @@ jobs:
           if [ -f "$DEFCONFIG" ]; then
             sed -i '/CONFIG_KSU_NEXT/d' "$DEFCONFIG"
             sed -i '/CONFIG_KSU_KPROBES_HOOK/d' "$DEFCONFIG"
+            if [[ "${{ inputs.nomount }}" == "true" ]]; then
+              grep -q "^CONFIG_NOMOUNT=y" "$DEFCONFIG" || echo "CONFIG_NOMOUNT=y" >> "$DEFCONFIG"
+            fi
             if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
@@ -614,7 +617,7 @@ jobs:
           fi
           CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
           if [ -n "$CFG" ]; then
-            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS not found in $CFG"
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_NOMOUNT=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/NOMOUNT not found in $CFG"
             grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
           fi
 

@@ -19,6 +19,10 @@ on:
       susfs:
         required: true
         type: string
+      kpm:
+        required: false
+        type: string
+        default: "true"
       bbg:
         required: true
         type: string
@@ -92,6 +96,7 @@ jobs:
           fi
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "ROOT_PROVIDER=$ROOT_PROVIDER" >> $GITHUB_ENV
+          echo "KPM=${{ inputs.kpm }}" >> $GITHUB_ENV
 
       - name: get kernel version before cloning
         uses: ./.github/actions/kernel-info
@@ -513,7 +518,7 @@ jobs:
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
-              if [[ "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
+              if [[ "${{ inputs.kpm }}" == "true" && ( "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ) ]]; then
                 if grep -rnE "^\s*config\s+KPM\b" "$KERNEL_ROOT/drivers/kernelsu" "$GITHUB_WORKSPACE/SukiSU-Nova" 2>/dev/null | grep -q .; then
                   grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
                 else
@@ -623,7 +628,7 @@ jobs:
         uses: ./.github/actions/ak3zip-prep
 
       - name: Apply KPM patch for SukiSU-Nova
-        if: (inputs.sukisu_nova == 'true' || env.ROOT_PROVIDER == 'sukisu-nova')
+        if: inputs.kpm == 'true' && (inputs.sukisu_nova == 'true' || env.ROOT_PROVIDER == 'sukisu-nova')
         shell: bash
         run: |
           set -euo pipefail
@@ -633,13 +638,13 @@ jobs:
             echo "Skipping KPM patch: CONFIG_KPM=y is not enabled in $DEFCONFIG"
             exit 0
           fi
-          : "${ANYKERNEL3:?ANYKERNEL3 is not set}"
+          AK3_DIR="${ANYKERNEL3:-$GITHUB_WORKSPACE/AnyKernel3}"
           WORK_KPM="${RUNNER_TEMP:-/tmp}/SukiSU_patch"
           rm -rf "$WORK_KPM"
           git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU_patch.git "$WORK_KPM"
-          mkdir -p "$ANYKERNEL3"
-          cp -f "$WORK_KPM/kpm/patch_linux" "$ANYKERNEL3/patch_linux"
-          cd "$ANYKERNEL3"
+          mkdir -p "$AK3_DIR"
+          cp -f "$WORK_KPM/kpm/patch_linux" "$AK3_DIR/patch_linux"
+          cd "$AK3_DIR"
           chmod +x patch_linux
           if [[ -f Image.gz ]]; then
             gzip -df Image.gz
@@ -652,7 +657,7 @@ jobs:
             rm -f patch_linux Image
             mv oImage Image
           else
-            echo "::error::Neither Image.gz nor Image found in $ANYKERNEL3"
+            echo "::error::Neither Image.gz nor Image found in $AK3_DIR"
             exit 1
           fi
           rm -rf "$WORK_KPM"
@@ -711,6 +716,11 @@ jobs:
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
           echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
+          if [[ "${{ inputs.kpm }}" == "true" && ( "${{ env.ROOT_PROVIDER }}" == "sukisu-nova" || "${{ inputs.sukisu_nova }}" == "true" ) ]]; then
+            echo "- **KPM**: Enabled" >> build_summary.md
+          else
+            echo "- **KPM**: Disabled" >> build_summary.md
+          fi
           if [[ "${{ inputs.bbg }}" == "true" ]]; then
             echo "- **BBG**: Enabled" >> build_summary.md
           else

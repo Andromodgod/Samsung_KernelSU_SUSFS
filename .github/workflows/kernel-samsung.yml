@@ -13,10 +13,6 @@ on:
       susfs:
         required: true
         type: string
-      kpm:
-        required: false
-        type: string
-        default: "true"
       bbg:
         required: true
         type: string
@@ -113,7 +109,6 @@ jobs:
       bakasu: ${{ matrix.bakasu }}
       finasu: ${{ matrix.finasu }}
       susfs: ${{ inputs.susfs }}
-      kpm: ${{ inputs.kpm }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}

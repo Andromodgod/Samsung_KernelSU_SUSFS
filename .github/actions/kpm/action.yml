@@ -2,37 +2,37 @@ name: apply kpm to kernel image
 description: apply kpm patch to kernel image from sukisu
 
 runs:
- using: composite
- steps:
-   - name: download sukisu repo and run script to apply kpm compatibility
-     shell: bash
-     run: |
-      git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
-      cp SukiSU_patch/kpm/patch_linux "$ANYKERNEL3"
-      
-      cd "$ANYKERNEL3"
-      chmod +x patch_linux
-      if [[ -f Image.gz ]]; then
-      #decompress .gz to raw
-      gzip -d Image.gz
-      
-      #apply kpm patch
-      ./patch_linux
-      echo "KPM patch applied successfully!"
-      rm patch_linux
-      rm Image
-      mv oImage Image
-      
-      # 3. compress it back to gz
-      gzip -9 Image
-      
-      else
-      
-      ./patch_linux
-      
-      echo "KPM patch applied successfully!"
-      rm patch_linux
-      rm Image
-      mv oImage Image
-      fi
-      
+  using: composite
+  steps:
+    - name: download sukisu repo and run script to apply kpm compatibility
+      shell: bash
+      run: |
+        set -euo pipefail
+        : "${ANYKERNEL3:?ANYKERNEL3 is not set}"
+        WORK_KPM="${RUNNER_TEMP:-/tmp}/SukiSU_patch"
+
+        rm -rf "$WORK_KPM"
+        git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU_patch.git "$WORK_KPM"
+
+        mkdir -p "$ANYKERNEL3"
+        cp -f "$WORK_KPM/kpm/patch_linux" "$ANYKERNEL3/patch_linux"
+        cd "$ANYKERNEL3"
+        chmod +x patch_linux
+
+        if [[ -f Image.gz ]]; then
+          gzip -df Image.gz
+          ./patch_linux
+          rm -f patch_linux Image
+          mv oImage Image
+          gzip -9 -f Image
+        elif [[ -f Image ]]; then
+          ./patch_linux
+          rm -f patch_linux Image
+          mv oImage Image
+        else
+          echo "::error::Neither Image.gz nor Image found in $ANYKERNEL3"
+          exit 1
+        fi
+
+        rm -rf "$WORK_KPM"
+        echo "KPM patch applied successfully!"

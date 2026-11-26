@@ -16,6 +16,10 @@ on:
         required: false
         type: string
         default: bakasu
+      kpm:
+        required: false
+        type: string
+        default: none
       susfs:
         required: true
         type: string
@@ -75,7 +79,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v5
 
-      - name: Store branch and root_provider as env variables
+      - name: Store branch, root_provider, and kpm as env variables
         run: |
           BRANCH=${{ inputs.branch }}
           ROOT_PROVIDER=${{ inputs.root_provider }}
@@ -90,8 +94,15 @@ jobs:
               ROOT_PROVIDER="clean"
             fi
           fi
+
+          KPM_MODE="${{ inputs.kpm }}"
+          if [[ "$ROOT_PROVIDER" != "sukisu-nova" ]] || [[ "$KPM_MODE" != "patch_linux" && "$KPM_MODE" != "kpn" ]]; then
+            KPM_MODE="none"
+          fi
+
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
           echo "ROOT_PROVIDER=$ROOT_PROVIDER" >> $GITHUB_ENV
+          echo "KPM_MODE=$KPM_MODE" >> $GITHUB_ENV
 
       - name: get kernel version before cloning
         uses: ./.github/actions/kernel-info
@@ -524,6 +535,9 @@ jobs:
             fi
             if [[ "${{ inputs.bakasu }}" == "true" || "${{ inputs.finasu }}" == "true" || "${{ inputs.sukisu_nova }}" == "true" ]]; then
               grep -q "^CONFIG_KSU=y" "$DEFCONFIG" || echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+              if [[ "$ROOT_PROVIDER" == "sukisu-nova" && "$KPM_MODE" != "none" ]]; then
+                grep -q "^CONFIG_KPM=y" "$DEFCONFIG" || echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+              fi
               if [[ "${{ inputs.susfs }}" == "true" ]]; then
                 grep -q "^CONFIG_KSU_SUSFS=y" "$DEFCONFIG" || echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
               fi
@@ -578,6 +592,10 @@ jobs:
             NEW_FILE_NAME="${NEW_FILE_NAME}-Normie-Kernel-${ROOT_TAG}"
           fi
 
+          if [[ "$ROOT_PROVIDER" == "sukisu-nova" && "$KPM_MODE" != "none" ]]; then
+            NEW_FILE_NAME="${NEW_FILE_NAME}-KPM-${KPM_MODE}"
+          fi
+
           echo "FILE_NAME=$NEW_FILE_NAME" >> $GITHUB_ENV
           echo "Output FILE_NAME set to: $NEW_FILE_NAME"
 
@@ -617,7 +635,7 @@ jobs:
           fi
           CFG=$(find "$CONFIG" -maxdepth 8 -type f -name ".config" 2>/dev/null | head -n 1 || true)
           if [ -n "$CFG" ]; then
-            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_NOMOUNT=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/NOMOUNT not found in $CFG"
+            grep -E "^CONFIG_KSU=|^CONFIG_KPROBES=|^CONFIG_KALLSYMS_ALL=|^CONFIG_KSU_SUSFS=|^CONFIG_NOMOUNT=|^CONFIG_KPM=" "$CFG" || echo "::warning::KSU/KPROBES/KALLSYMS_ALL/KSU_SUSFS/NOMOUNT/KPM not found in $CFG"
             grep -q "^CONFIG_KSU=y" "$CFG" || echo "::warning::CONFIG_KSU=y is not set in the final .config"
           fi
 
@@ -631,6 +649,14 @@ jobs:
 
       - name: Prepare AnyKernel3
         uses: ./.github/actions/ak3zip-prep
+
+      - name: Apply KPM (SukiSU-Nova only)
+        if: env.ROOT_PROVIDER == 'sukisu-nova' && env.KPM_MODE != 'none'
+        uses: ./.github/actions/apply-kpm
+        env:
+          ANYKERNEL3: ${{ github.workspace }}/AnyKernel3
+        with:
+          kpm_mode: ${{ env.KPM_MODE }}
 
       - name: Set AnyKernel3 Banner Name
         run: |
@@ -685,6 +711,9 @@ jobs:
           echo "- **Kernel Version**: ${KERNEL_VER}" >> build_summary.md
           echo "- **Kernel Name**: Normie-Kernel" >> build_summary.md
           echo "- **Root Provider**: ${ROOT_PROVIDER}" >> build_summary.md
+          if [[ "$ROOT_PROVIDER" == "sukisu-nova" ]]; then
+            echo "- **KPM**: ${KPM_MODE}" >> build_summary.md
+          fi
           if [[ "${{ inputs.bbg }}" == "true" ]]; then
             echo "- **BBG**: Enabled" >> build_summary.md
           else

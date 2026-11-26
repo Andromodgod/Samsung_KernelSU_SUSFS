@@ -206,7 +206,7 @@ runs:
             EFFECTIVE_LTO="full"
           fi
 
-          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" "${ROOT_PROVIDER:-}" << 'PYEOF'
+          python3 - "$KERNEL_DIR" "$PWD/kernel_platform/msm-kernel" "$EFFECTIVE_LTO" "$PWD/kernel_platform" "${ROOT_PROVIDER:-}" "${KPM:-true}" << 'PYEOF'
         import os, pathlib, re, sys
 
         roots = []
@@ -222,6 +222,7 @@ runs:
         lto_mode = sys.argv[3]
         kp_dir = pathlib.Path(sys.argv[4])
         root_provider = sys.argv[5]
+        kpm_enabled = sys.argv[6].strip().lower() == "true"
 
         base_config_lines = [
             'CONFIG_LOCALVERSION="-Normie-Kernel"',
@@ -324,6 +325,8 @@ runs:
 
         extra_strip_keys = {
             "CONFIG_KPM",
+            "CONFIG_KALLSYMS",
+            "CONFIG_KALLSYMS_ALL",
             "CONFIG_DEFAULT_CUBIC",
             "CONFIG_DEFAULT_RENO",
             "CONFIG_DEFAULT_PFIFO_FAST",
@@ -396,7 +399,7 @@ runs:
                 ktxt = "\n".join(p.read_text(encoding="utf-8", errors="ignore") for p in ksu_kcs)
                 config_lines.append("CONFIG_KSU=y")
                 if root_provider == "sukisu-nova":
-                    if re.search(r"^\s*config\s+KPM\b", ktxt, flags=re.MULTILINE):
+                    if kpm_enabled and re.search(r"^\s*config\s+KPM\b", ktxt, flags=re.MULTILINE):
                         config_lines.append("CONFIG_KPM=y")
                         config_lines += ["CONFIG_KALLSYMS=y", "CONFIG_KALLSYMS_ALL=y"]
                     if re.search(r"^\s*config\s+KSU_SUSFS\b", ktxt, flags=re.MULTILINE):

@@ -1,19 +1,15 @@
-name: Kernel Config - Samsung
-
-permissions:
-  contents: write  # Allow writing to repository contents
-  actions: write   # Allows triggering actions
+name: Samsung Kernel Build
 
 on:
   workflow_call:
     inputs:
       oneui_targets:
-        required: true
-        type: string
-      root_provider:
         required: false
         type: string
-        default: both
+        default: all
+      root_provider:
+        required: true
+        type: string
       susfs:
         required: true
         type: string
@@ -26,10 +22,6 @@ on:
       nomount:
         required: true
         type: string
-      bakasu:
-        required: false
-        type: string
-        default: "true"
       droidspace:
         required: true
         type: string
@@ -61,23 +53,23 @@ jobs:
     outputs:
       matrix_include: ${{ steps.set_matrix.outputs.matrix_include }}
     steps:
-      - name: Build target matrix from selection
+      - name: Build filtered target matrix
         id: set_matrix
         run: |
           python3 - << 'PYEOF'
           import json, os
 
-          target_in = "${{ inputs.oneui_targets }}"
-          root_in = "${{ inputs.root_provider }}" or ("bakasu" if "${{ inputs.bakasu }}" == "true" else "clean")
+          target_in = "${{ inputs.oneui_targets }}".strip()
+          root_in = "${{ inputs.root_provider }}".strip()
 
-          if target_in == "all":
+          if not target_in or target_in == "all":
               branches = ["SM-S928B-Oneui9", "SM-S928B-Oneui8.5", "SM-S928B-Oneui8"]
           else:
               branches = [target_in]
 
           if root_in == "both":
-              roots = ["bakasu", "finasu"]
-          elif root_in in ("bakasu", "finasu", "clean"):
+              roots = ["sukisu-nova", "bakasu", "finasu"]
+          elif root_in in ("sukisu-nova", "bakasu", "finasu", "clean"):
               roots = [root_in]
           else:
               roots = ["bakasu"]
@@ -87,6 +79,7 @@ jobs:
                   "branch": branch,
                   "build_type": "Bazel",
                   "root_provider": root,
+                  "sukisu_nova": "true" if root == "sukisu-nova" else "false",
                   "bakasu": "true" if root == "bakasu" else "false",
                   "finasu": "true" if root == "finasu" else "false",
               }
@@ -112,6 +105,7 @@ jobs:
       branch: ${{ matrix.branch }}
       build_type: ${{ matrix.build_type }}
       root_provider: ${{ matrix.root_provider }}
+      sukisu_nova: ${{ matrix.sukisu_nova }}
       bakasu: ${{ matrix.bakasu }}
       finasu: ${{ matrix.finasu }}
       susfs: ${{ inputs.susfs }}

@@ -1,22 +1,22 @@
-name: Kernel Config - Samsung
-
-permissions:
-  contents: read
-  actions: write
+name: Samsung Kernel Build
 
 on:
   workflow_call:
     inputs:
       oneui_targets:
-        required: true
-        type: string
-      root_provider:
         required: false
         type: string
-        default: both
+        default: all
+      root_provider:
+        required: true
+        type: string
       susfs:
         required: true
         type: string
+      kpm:
+        required: false
+        type: string
+        default: "true"
       bbg:
         required: true
         type: string
@@ -26,18 +26,6 @@ on:
       nomount:
         required: true
         type: string
-      bakasu:
-        required: false
-        type: string
-        default: "true"
-      sukisu_nova:
-        required: false
-        type: string
-        default: "false"
-      finasu:
-        required: false
-        type: string
-        default: "false"
       droidspace:
         required: true
         type: string
@@ -64,79 +52,131 @@ on:
         type: string
 
 jobs:
-  select-targets:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix_include: ${{ steps.set_matrix.outputs.matrix_include }}
-    steps:
-      - name: Build target matrix from selection
-        id: set_matrix
-        run: |
-          python3 - << 'PYEOF'
-          import json, os
-
-          target_in = "${{ inputs.oneui_targets }}"
-          root_in = "${{ inputs.root_provider }}"
-          if not root_in:
-              if "${{ inputs.sukisu_nova }}" == "true":
-                  root_in = "sukisu-nova"
-              elif "${{ inputs.finasu }}" == "true":
-                  root_in = "finasu"
-              elif "${{ inputs.bakasu }}" == "true":
-                  root_in = "bakasu"
-              else:
-                  root_in = "clean"
-
-          if target_in == "all":
-              branches = ["SM-S928B-Oneui9", "SM-S928B-Oneui8.5", "SM-S928B-Oneui8"]
-          else:
-              branches = [target_in]
-
-          if root_in == "both":
-              roots = ["sukisu-nova", "bakasu", "finasu"]
-          elif root_in in ("sukisu-nova", "bakasu", "finasu", "clean"):
-              roots = [root_in]
-          else:
-              roots = ["bakasu"]
-
-          matrix_include = [
-              {
-                  "branch": branch,
-                  "build_type": "Bazel",
-                  "root_provider": root,
-                  "sukisu_nova": "true" if root == "sukisu-nova" else "false",
-                  "bakasu": "true" if root == "bakasu" else "false",
-                  "finasu": "true" if root == "finasu" else "false",
-              }
-              for branch in branches
-              for root in roots
-          ]
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
-              fh.write("matrix_include=" + json.dumps(matrix_include) + "\n")
-          PYEOF
-
   build-kernels-a12:
-    needs: select-targets
-    name: "Samsung-${{ matrix.branch }}-${{ matrix.root_provider }}"
+    uses: ./.github/workflows/build.yml
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJson(needs.select-targets.outputs.matrix_include) }}
+        include:
+          - branch: SM-S928B-Oneui9
+            build_type: bazel
+            sukisu_nova: true
+            bakasu: false
+            finasu: false
+            root_provider: sukisu-nova
+            target_group: SM-S928B-Oneui9
 
-    uses: ./.github/workflows/build.yml
+          - branch: SM-S928B-Oneui9
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: true
+            finasu: false
+            root_provider: bakasu
+            target_group: SM-S928B-Oneui9
+
+          - branch: SM-S928B-Oneui9
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: true
+            root_provider: finasu
+            target_group: SM-S928B-Oneui9
+
+          - branch: SM-S928B-Oneui9
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: false
+            root_provider: clean
+            target_group: SM-S928B-Oneui9
+
+          - branch: SM-S928B-Oneui8.5
+            build_type: bazel
+            sukisu_nova: true
+            bakasu: false
+            finasu: false
+            root_provider: sukisu-nova
+            target_group: SM-S928B-Oneui8.5
+
+          - branch: SM-S928B-Oneui8.5
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: true
+            finasu: false
+            root_provider: bakasu
+            target_group: SM-S928B-Oneui8.5
+
+          - branch: SM-S928B-Oneui8.5
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: true
+            root_provider: finasu
+            target_group: SM-S928B-Oneui8.5
+
+          - branch: SM-S928B-Oneui8.5
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: false
+            root_provider: clean
+            target_group: SM-S928B-Oneui8.5
+
+          - branch: SM-S928B-Oneui8
+            build_type: bazel
+            sukisu_nova: true
+            bakasu: false
+            finasu: false
+            root_provider: sukisu-nova
+            target_group: SM-S928B-Oneui8
+
+          - branch: SM-S928B-Oneui8
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: true
+            finasu: false
+            root_provider: bakasu
+            target_group: SM-S928B-Oneui8
+
+          - branch: SM-S928B-Oneui8
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: true
+            root_provider: finasu
+            target_group: SM-S928B-Oneui8
+
+          - branch: SM-S928B-Oneui8
+            build_type: bazel
+            sukisu_nova: false
+            bakasu: false
+            finasu: false
+            root_provider: clean
+            target_group: SM-S928B-Oneui8
+
+    if: >-
+      (
+        inputs.oneui_targets == '' ||
+        inputs.oneui_targets == 'all' ||
+        matrix.target_group == inputs.oneui_targets
+      ) &&
+      (
+        inputs.root_provider == 'both' ||
+        matrix.root_provider == inputs.root_provider
+      )
     secrets: inherit
     with:
       branch: ${{ matrix.branch }}
       build_type: ${{ matrix.build_type }}
       root_provider: ${{ matrix.root_provider }}
-      sukisu_nova: ${{ matrix.sukisu_nova }}
-      bakasu: ${{ matrix.bakasu }}
-      finasu: ${{ matrix.finasu }}
       susfs: ${{ inputs.susfs }}
+      kpm: ${{ inputs.kpm }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
+      sukisu_nova: ${{ matrix.sukisu_nova }}
+      bakasu: ${{ matrix.bakasu }}
+      finasu: ${{ matrix.finasu }}
       droidspace: ${{ inputs.droidspace }}
       ntsync: ${{ inputs.ntsync }}
       bbrv3: ${{ inputs.bbrv3 }}

@@ -68,12 +68,6 @@ on:
         default: true
         type: boolean
 
-      kpm:
-        description: "KPM (Kernel Patch Module for SukiSU-Nova)"
-        required: false
-        default: true
-        type: boolean
-
       nomount:
         description: "NoMount"
         required: false
@@ -142,7 +136,6 @@ jobs:
       oneui_targets: ${{ inputs.oneui_targets }}
       root_provider: ${{ inputs.root_provider }}
       susfs: ${{ inputs.susfs }}
-      kpm: ${{ inputs.kpm }}
       bbg: ${{ inputs.bbg }}
       unicodefix: ${{ inputs.unicodefix }}
       nomount: ${{ inputs.nomount }}
@@ -875,7 +868,6 @@ jobs:
               });
             }
 
-            // Serialize KSU bridge calls so WebView/IPC never stalls under concurrent requests
             function ksuExec(cmd, timeoutMs = 4500) {
               const task = execQueue.then(() => runSingleExec(cmd, timeoutMs));
               execQueue = task.catch(() => {});
@@ -949,7 +941,6 @@ jobs:
                   return;
                 }
 
-                // Single batched shell command avoids flooding the KSU JS bridge with 11 separate calls
                 const batchCmd = [
                   "echo '===KVER==='; uname -r 2>/dev/null || true",
                   "echo '===MODE==='; cat " + MOD + "/mode.conf 2>/dev/null || echo battery",
@@ -1226,11 +1217,6 @@ jobs:
           cat <<'EOF' >> release_body.md
           -> SukiSU-Nova - https://github.com/SukiSU-Nova/SukiSU-Nova
           EOF
-          if [[ "${{ inputs.kpm }}" == "true" ]]; then
-          cat <<'EOF' >> release_body.md
-          -> KPM Support (SukiSU-Nova) - Kernel image patched with SukiSU patch_linux for Kernel Patch Modules
-          EOF
-          fi
           fi
 
           if [[ "${{ inputs.root_provider }}" == "both" || "${{ inputs.root_provider }}" == "bakasu" ]]; then
@@ -1255,7 +1241,7 @@ jobs:
           cat <<'EOF' >> release_body.md
           -> SUSFS - https://gitlab.com/simonpunk/susfs4ksu
           -> SUSFS Inline hooks
-          -> /proc/config.gz Stealth Masking (hides KSU, KPM, BBG, TMPFS_XATTR, WireGuard, BBR)
+          -> /proc/config.gz Stealth Masking (hides KSU, BBG, TMPFS_XATTR, WireGuard, BBR)
           EOF
           fi
 

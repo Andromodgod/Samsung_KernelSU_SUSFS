@@ -1,0 +1,81 @@
+name: apply kpm to kernel image
+description: apply kpm (patch_linux) or kpn (kptools-linux + kpimg-linux) to kernel image for SukiSU-Nova
+
+inputs:
+  kpm_mode:
+    description: 'KPM patching mode: none, patch_linux, or kpn'
+    required: true
+    default: 'none'
+
+runs:
+  using: composite
+  steps:
+    - name: apply kpm or kpn to kernel image
+      shell: bash
+      run: |
+        set -euo pipefail
+        MODE="${{ inputs.kpm_mode }}"
+
+        if [[ "$MODE" == "none" ]]; then
+          echo "KPM mode set to none; skipping."
+          exit 0
+        fi
+
+        if [[ "${ROOT_PROVIDER:-}" != "sukisu-nova" ]]; then
+          echo "ROOT_PROVIDER is '${ROOT_PROVIDER:-unset}' (not sukisu-nova); skipping KPM."
+          exit 0
+        fi
+
+        : "${ANYKERNEL3:?ANYKERNEL3 is not set}"
+        WORK_KPM="${RUNNER_TEMP:-/tmp}/kpm_work"
+        rm -rf "$WORK_KPM"
+        mkdir -p "$WORK_KPM" "$ANYKERNEL3"
+
+        patch_raw_image() {
+          local img_file="$1"
+          if [[ "$MODE" == "patch_linux" ]]; then
+            git clone --depth=1 https://github.com/SukiSU-Ultra/SukiSU_patch.git "$WORK_KPM/SukiSU_patch"
+            cp -f "$WORK_KPM/SukiSU_patch/kpm/patch_linux" "$img_file.patch_linux"
+            chmod +x "$img_file.patch_linux"
+            (cd "$ANYKERNEL3" && "./$(basename "$img_file.patch_linux")")
+            rm -f "$img_file.patch_linux" "$img_file"
+            mv -f "$ANYKERNEL3/oImage" "$img_file"
+          elif [[ "$MODE" == "kpn" ]]; then
+            curl -fsSL "https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip" -o "$WORK_KPM/kpn.zip"
+            unzip -q "$WORK_KPM/kpn.zip" -d "$WORK_KPM/kpn"
+            KPTOOLS=$(find "$WORK_KPM/kpn" -type f -name "kptools-linux" | head -n 1)
+            KPIMG=$(find "$WORK_KPM/kpn" -type f -name "kpimg-linux" | head -n 1)
+            if [[ -z "$KPTOOLS" || -z "$KPIMG" ]]; then
+              echo "::error::kptools-linux or kpimg-linux not found inside kpn.zip"
+              exit 1
+            fi
+            chmod +x "$KPTOOLS"
+            "$KPTOOLS" -p -i "$img_file" -k "$KPIMG" -o "$ANYKERNEL3/oImage"
+            rm -f "$img_file"
+            mv -f "$ANYKERNEL3/oImage" "$img_file"
+          else
+            echo "::error::Unsupported kpm_mode: $MODE"
+            exit 1
+          fi
+        }
+
+        cd "$ANYKERNEL3"
+        if [[ -f Image ]]; then
+          patch_raw_image "$ANYKERNEL3/Image"
+        elif [[ -f Image.gz ]]; then
+          gzip -df Image.gz
+          patch_raw_image "$ANYKERNEL3/Image"
+          gzip -9 -f Image
+        elif [[ -f Image.lz4 ]]; then
+          lz4 -df Image.lz4 Image
+          patch_raw_image "$ANYKERNEL3/Image"
+          rm -f Image.lz4
+          lz4 -9 -f Image Image.lz4
+          rm -f Image
+        else
+          echo "::error::No Image, Image.gz, or Image.lz4 found in $ANYKERNEL3"
+          exit 1
+        fi
+
+        rm -rf "$WORK_KPM"
+        echo "Applied KPM mode '$MODE' for SukiSU-Nova successfully!"

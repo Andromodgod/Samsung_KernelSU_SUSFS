@@ -278,7 +278,7 @@ jobs:
             "$KERNEL_ROOT/BakaSU/kernel/tools/static_export_check.mk"; do
             if [ -f "$mk_file" ]; then
               sed -i -E 's/\$\(error\b/\$(warning/g' "$mk_file"
-              echo "Neutralized $(error in $mk_file"
+              echo 'Neutralized $(error) in '"$mk_file"
             fi
           done
 
